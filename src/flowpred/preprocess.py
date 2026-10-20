@@ -3,11 +3,18 @@
 Only Ethernet link type is supported (MAWI). Raw-IP link type (CAIDA) is
 a later addition: add a branch here that parses from IP without Ethernet.
 
-Usage: python -m flowpred.preprocess <pcap> <out.csv> [max_packets]
+Usage: python -m flowpred.preprocess <pcap> <out.csv> [max_packets] [--sample-rate r]
+
+--sample-rate r (0<r<=1, default 1.0) keeps only flows whose directed 5-tuple
+raw-byte crc32 is < r*2**32 (deterministic across runs); kept flows keep all
+packets. The CLI also writes <out.csv>.meta.json = {"sample_rate": r}.
 """
+import argparse
 import gzip
+import json
 import socket
-import sys
+import struct
+import zlib
 
 import dpkt
 import pandas as pd
@@ -29,8 +36,11 @@ def _open(path):
     return gzip.GzipFile(fileobj=f) if magic == b"\x1f\x8b" else f
 
 
-def preprocess(pcap_path, max_packets=None, n_max=N_MAX):
+def preprocess(pcap_path, max_packets=None, n_max=N_MAX, sample_rate=1.0):
     """Return the flow table as a DataFrame sorted by start_ts."""
+    if not 0 < sample_rate <= 1:
+        raise ValueError("sample_rate must be in (0, 1]")
+    limit = sample_rate * 2**32
     flows = {}  # key -> [start_ts, pkts, bytes, plens, iats, last_data_ts]
     with _open(pcap_path) as f:
         reader = dpkt.pcap.Reader(f)
@@ -52,6 +62,9 @@ def preprocess(pcap_path, max_packets=None, n_max=N_MAX):
                 plen = ip.len - 4 * ip.hl - 8
             else:
                 continue
+            if sample_rate < 1.0 and zlib.crc32(
+                    ip.src + ip.dst + struct.pack("!HHB", l4.sport, l4.dport, ip.p)) >= limit:
+                continue  # dropped flow: nothing cached
             key = (socket.inet_ntoa(ip.src), socket.inet_ntoa(ip.dst),
                    l4.sport, l4.dport, ip.p)
             fl = flows.get(key)
@@ -73,8 +86,18 @@ def preprocess(pcap_path, max_packets=None, n_max=N_MAX):
     return df.sort_values("start_ts", kind="stable").reset_index(drop=True)
 
 
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="flowpred.preprocess")
+    ap.add_argument("pcap")
+    ap.add_argument("out_csv")
+    ap.add_argument("max_packets", nargs="?", type=int)
+    ap.add_argument("--sample-rate", type=float, default=1.0)
+    a = ap.parse_args(argv)
+    df = preprocess(a.pcap, a.max_packets, sample_rate=a.sample_rate)
+    df.to_csv(a.out_csv, index=False)
+    with open(a.out_csv + ".meta.json", "w") as fh:
+        json.dump({"sample_rate": a.sample_rate}, fh)
+
+
 if __name__ == "__main__":
-    if len(sys.argv) not in (3, 4):
-        sys.exit(__doc__)
-    mp = int(sys.argv[3]) if len(sys.argv) == 4 else None
-    preprocess(sys.argv[1], mp).to_csv(sys.argv[2], index=False)
+    main()

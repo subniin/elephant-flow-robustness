@@ -1,4 +1,5 @@
 import gzip
+import json
 import socket
 import sys
 from pathlib import Path
@@ -7,8 +8,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import dpkt
 import pandas as pd
+import pytest
 
-from flowpred.preprocess import columns, preprocess
+from flowpred.preprocess import columns, main, preprocess
 
 A, B = "10.0.0.1", "10.0.0.2"
 
@@ -87,4 +89,43 @@ def test_csv_roundtrip(tmp_path):
     write_pcap(f, pk)
     out = tmp_path / "o.csv"
     preprocess(f).to_csv(out, index=False)
+    assert list(pd.read_csv(out).columns) == columns()
+
+
+def many(n=200):
+    """n UDP flows (distinct sport), 1-3 packets each."""
+    p = []
+    for i in range(n):
+        for j in range(i % 3 + 1):
+            p.append((i + j * 0.01, pkt(A, B, 2000 + i, 53, payload=10 + i, proto=17)[0]))
+    p.sort(key=lambda x: x[0])
+    return p
+
+
+def test_sample_rate(tmp_path):
+    f = tmp_path / "m.pcap"
+    write_pcap(f, many())
+    full = preprocess(f)
+    assert len(full) == 200 and full.equals(preprocess(f, sample_rate=1.0))
+    half = preprocess(f, sample_rate=0.5)
+    assert half.equals(preprocess(f, sample_rate=0.5))  # deterministic
+    assert list(half.columns) == columns()
+    assert 0 < len(half) < len(full)
+    keys = ["src_ip", "dst_ip", "src_port", "dst_port", "proto"]
+    m = half.merge(full, on=keys, suffixes=("", "_f"))
+    assert len(m) == len(half)
+    assert (m.pkt_count == m.pkt_count_f).all() and (m.byte_count == m.byte_count_f).all()
+    for bad in (0, -0.1, 1.5):
+        with pytest.raises(ValueError):
+            preprocess(f, sample_rate=bad)
+
+
+def test_cli_meta(tmp_path):
+    f, out = tmp_path / "m.pcap", tmp_path / "o.csv"
+    write_pcap(f, many())
+    main([str(f), str(out), "--sample-rate", "0.5"])
+    assert json.loads(Path(str(out) + ".meta.json").read_text()) == {"sample_rate": 0.5}
+    assert 0 < len(pd.read_csv(out)) < 200
+    main([str(f), str(out), "10"])  # positional max_packets, default rate
+    assert json.loads(Path(str(out) + ".meta.json").read_text()) == {"sample_rate": 1.0}
     assert list(pd.read_csv(out).columns) == columns()

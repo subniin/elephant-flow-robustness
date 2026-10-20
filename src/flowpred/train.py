@@ -2,21 +2,28 @@
 
 Usage (from the project root, with src on PYTHONPATH):
     python -m flowpred.train TRAIN_CSV [--test TEST_CSV] [--n 4]
-        [--thr-def bytes_pct|bytes_fixed|pkts_pct] [--thr-param 0.10]
-        [--thr-fit train|test] [--tail-sec 0] [--model rf] [--out RESULTS_CSV]
+        [--thr-def bytes_pct|bytes_fixed|pkts_pct] [--thr-param 0.01]
+        [--thr-fit train|test] [--tail-sec 0] [--train-max-rows N]
+        [--model rf] [--out RESULTS_CSV]
 
 Only TRAIN_CSV is positional. Without --test the train CSV is split 70/30 by
 start_ts. --thr-param is the top fraction p for *_pct, bytes for bytes_fixed.
---out appends one 24-column row (header written if the file is new).
+--train-max-rows N: if train has more than N rows (after tail filter), fit on
+a y-label stratified sample of N rows (random_state=0); threshold, labels and
+train_flows still use the full train, test is untouched. Raises ValueError (from
+sklearn) if a class has too few rows to stratify; no unstratified fallback.
+--out appends one 26-column row (header written if the file is new).
 """
 import argparse
 import csv
+import json
 import math
 import os
 
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.model_selection import train_test_split
 from sklearn.metrics import (f1_score, mean_absolute_error, precision_score,
                              recall_score)
 
@@ -25,7 +32,7 @@ from flowpred.features import (drop_tail, features, fit_threshold, label,
 
 COLUMNS = ["train_csv", "test_csv", "n", "model", "features", "thr_def",
            "thr_param", "thr_fit", "thr_value", "reg_thr_value", "tail_sec",
-           "train_flows", "test_flows", "test_pos", "short_flows",
+           "train_max_rows", "sample_rate", "train_flows", "test_flows", "test_pos", "short_flows",
            "precision", "recall", "f1", "tnr", "mae_log10",
            "clf_coverage", "clf_reduction", "reg_coverage", "reg_reduction"]
 
@@ -41,8 +48,9 @@ def _cov_red(pred, byte_count):
 def evaluate(Xtr, ytr, ytr_log, Xte, yte, yte_log, byte_count_te, reg_thr_value):
     """Fit rf classifier/regressor on train, return metric dict (None = N/A)."""
     clf = RandomForestClassifier(n_estimators=100, class_weight="balanced",
-                                 random_state=0).fit(Xtr, ytr)
-    reg = RandomForestRegressor(n_estimators=100, random_state=0).fit(Xtr, ytr_log)
+                                 random_state=0, n_jobs=-1).fit(Xtr, ytr)
+    reg = RandomForestRegressor(n_estimators=100, random_state=0,
+                                n_jobs=-1).fit(Xtr, ytr_log)
     pred = clf.predict(Xte)
     pred_log = reg.predict(Xte)
     bc = np.asarray(byte_count_te, dtype=float)
@@ -59,13 +67,26 @@ def evaluate(Xtr, ytr, ytr_log, Xte, yte, yte_log, byte_count_te, reg_thr_value)
     return m
 
 
-def run(train_csv, test_csv=None, n=4, thr_def="bytes_pct", thr_param=0.10,
-        thr_fit="train", tail_sec=0.0, model="rf"):
-    """Full pipeline for one setting; returns dict with all 24 COLUMNS."""
+def _sample_rate(csv_path):
+    """sample_rate from <csv>.meta.json written by preprocess; 1.0 if absent."""
+    try:
+        with open(str(csv_path) + ".meta.json") as fh:
+            return float(json.load(fh)["sample_rate"])
+    except FileNotFoundError:
+        return 1.0
+
+
+def run(train_csv, test_csv=None, n=4, thr_def="bytes_pct", thr_param=0.01,
+        thr_fit="train", tail_sec=0.0, model="rf", train_max_rows=None):
+    """Full pipeline for one setting; returns dict with all 26 COLUMNS
+    plus n_train_used (rows the models were fit on)."""
     if model != "rf":
         raise ValueError("only model 'rf' is supported")
     if thr_fit not in ("train", "test"):
         raise ValueError("thr_fit must be train or test")
+    sr = _sample_rate(train_csv)
+    if test_csv and _sample_rate(test_csv) != sr:
+        raise ValueError(f"sample_rate differs: train={sr} test={_sample_rate(test_csv)}")
     tr = drop_tail(pd.read_csv(train_csv), tail_sec)
     if test_csv:
         te = drop_tail(pd.read_csv(test_csv), tail_sec)
@@ -79,13 +100,18 @@ def run(train_csv, test_csv=None, n=4, thr_def="bytes_pct", thr_param=0.10,
     Xtr, ytr_log = features(tr, n)
     Xte, yte_log = features(te, n)
     ytr, yte = label(tr, thr_def, thr), label(te, thr_def, thr)
+    if train_max_rows is not None and len(tr) > train_max_rows:
+        idx = np.sort(train_test_split(np.arange(len(tr)), train_size=train_max_rows,
+                                       stratify=ytr, random_state=0)[0])
+        Xtr, ytr, ytr_log = Xtr.iloc[idx], ytr.iloc[idx], ytr_log.iloc[idx]
     m = evaluate(Xtr, ytr, ytr_log, Xte, yte, yte_log, te["byte_count"], reg_thr)
     short = float((Xte["n_seen"] < n).mean()) if n >= 1 else 0.0
     return {"train_csv": str(train_csv), "test_csv": str(test_csv or ""),
             "n": n, "model": model, "features": "all", "thr_def": thr_def,
             "thr_param": thr_param, "thr_fit": thr_fit, "thr_value": thr,
             "reg_thr_value": reg_thr, "tail_sec": tail_sec,
-            "train_flows": len(tr), "test_flows": len(te),
+            "train_max_rows": train_max_rows, "sample_rate": sr, "train_flows": len(tr),
+            "n_train_used": len(Xtr), "test_flows": len(te),
             "test_pos": int(yte.sum()), "short_flows": short, **m}
 
 
@@ -95,10 +121,11 @@ def _f(v, fmt):
 
 def format_report(r):
     return "\n".join([
-        f"n={r['n']} flows train={r['train_flows']} test={r['test_flows']} "
+        f"sample_rate={r['sample_rate']} n={r['n']} flows train={r['train_flows']} test={r['test_flows']} "
         f"threshold_bytes={r['thr_value']:.6g} reg_thr_value={r['reg_thr_value']:.6g} "
         f"test_elephants={r['test_pos']} short_flows={r['short_flows']:.2f} "
-        f"tail_sec={r['tail_sec']}",
+        f"tail_sec={r['tail_sec']} "
+        f"train_max_rows={r['train_max_rows'] if r['train_max_rows'] is not None else 'all'}",
         f"precision={r['precision']:.2f} recall={r['recall']:.2f} "
         f"f1={r['f1']:.2f} tnr={r['tnr']:.2f}",
         f"clf coverage={r['clf_coverage']:.2f} "
@@ -124,14 +151,15 @@ def main(argv=None):
     p.add_argument("--n", type=int, default=4)
     p.add_argument("--thr-def", default="bytes_pct",
                    choices=["bytes_pct", "bytes_fixed", "pkts_pct"])
-    p.add_argument("--thr-param", type=float, default=0.10)
+    p.add_argument("--thr-param", type=float, default=0.01)
     p.add_argument("--thr-fit", default="train", choices=["train", "test"])
     p.add_argument("--tail-sec", type=float, default=0.0)
+    p.add_argument("--train-max-rows", type=int, default=None)
     p.add_argument("--model", default="rf", choices=["rf"])
     p.add_argument("--out")
     a = p.parse_args(argv)
     r = run(a.train_csv, a.test_csv, a.n, a.thr_def, a.thr_param, a.thr_fit,
-            a.tail_sec, a.model)
+            a.tail_sec, a.model, a.train_max_rows)
     print(format_report(r))
     if a.out:
         append_row(a.out, r)

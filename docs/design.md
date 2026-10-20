@@ -1,6 +1,6 @@
 # 설계: 초반 N패킷 Elephant 예측 견고성 분석 파이프라인
 
-기준값은 [problem.md](problem.md)를 따른다: 기본 N = 4 데이터 패킷, elephant = train 바이트 상위 10%, 시간순 70/30 분할, 주·보조 지표. 연구 질문 RQ1–RQ3과 위험은 problem.md 8절에 있다. 이 문서는 그 값을 코드 구조, 파일 형식, 실험 계획으로 옮긴다. 문헌 번호 [1]–[9]는 problem.md 7.1절 표의 번호다. 각 결정마다 출처를 적었다. 논문 근거가 없는 결정은 "근거: 실용 판단"으로 적었다.
+기준값은 [problem.md](problem.md)를 따른다: 기본 N = 4 데이터 패킷, elephant = train 바이트 상위 1%(상위 10%는 누설 대조군, problem.md 3.2.1), 시간순 70/30 분할, 주·보조 지표. 연구 질문 RQ1–RQ3과 위험은 problem.md 8절에 있다. 이 문서는 그 값을 코드 구조, 파일 형식, 실험 계획으로 옮긴다. 문헌 번호 [1]–[9]는 problem.md 7.1절 표의 번호다. 각 결정마다 출처를 적었다. 논문 근거가 없는 결정은 "근거: 실용 판단"으로 적었다.
 
 ## 0. 결정과 출처 요약
 
@@ -24,7 +24,9 @@
 | 특징: proto, 포트 | proto, src_port, dst_port | [3], [4](둘 다 헤더 5-tuple 사용) | 유지 |
 | 특징 제외: IP 주소 | 베이스라인에서 안 씀 | [3], [4]는 사용. 제외 이유는 cross-dataset 일반화 [9]. IP 비트 특징은 2027 비교 | 이유 **변경** (이전: 익명화) |
 | 특징 보류 | 클라이언트/서버(첫 패킷 TCP 플래그로 근사), 방향 | [3], [1] | 유지 (2027) |
-| elephant 임계값 | train 바이트 90번째 백분위수(상위 10%) | [9](도메인별 바이트 백분위수 85/90/88%). [3]의 고정 임계값은 데이터셋마다 elephant 비율이 12%–0.1% 미만으로 달라짐 | 유지, 출처 보강 |
+| elephant 임계값 | train 바이트 99번째 백분위수(상위 1%, `bytes_pct` p = 0.01) | [9](도메인별 바이트 백분위수 방식). 상위 10%는 MAWI에서 elephant의 51.6%가 데이터 패킷 4개 미만이라 누설 구조가 되어 기본값에서 뺐다(problem.md 3.2.1, 임시 측정, 한 trace). [3]의 고정 임계값은 데이터셋마다 elephant 비율이 12%–0.1% 미만으로 달라짐 | **변경** (이전: 상위 10%) |
+| train 행 수 제한 | `--train-max-rows N`(기본 전체). y 기준 층화 추출, 임계값은 전체 train으로 구함, test는 줄이지 않음 | 근거: 실용 판단. RF 학습 비용(train 180만 행, n=4 1회 41분, 최대 7GB; n_jobs 기본 1일 때) | **추가** |
+| flow 해시 샘플링 | `preprocess --sample-rate r`. 5-tuple crc32로 flow를 결정적으로 고르고 고른 flow의 패킷은 전부 유지 | 근거: 실용 판단. 2026-10-18 trace(gz 6.1GB, 2.4억 패킷)는 flow dict가 약 33GB 필요할 것으로 추정(가정), RAM 15.6GB | **추가** |
 | 분할 | 시작시각 순 70/30 | 근거: 실용 판단. 문헌은 무작위 80/20 [4], 층화 k-fold [8][9]. 운영 조건에 맞추려 시간순 유지 | 유지 |
 | 분류 모델 | RandomForestClassifier(100 trees, class_weight="balanced") | [9](같은 설정을 cross-domain 실험에 사용), [3](elephant 오류에 비율 역수 가중치) | 출처 **추가** (이전: 논문 근거 없음) |
 | 회귀 모델 | RandomForestRegressor, 대상 log10 바이트 | 근거: 실용 판단. [4]도 바이트 크기를 회귀(정규화한 라벨) | 유지 |
@@ -56,7 +58,8 @@ S3과 S4의 범위는 plan의 원래 목표 문구보다 커졌다. spec을 쓸 
 - CLI 인자:
   - [ ] train CSV, 선택적인 test CSV(없으면 시간순 분할)
   - [ ] n(기본 4)
-  - [ ] 임계값 정의(기본 `bytes_pct`)와 값(기본 0.10)
+  - [ ] 임계값 정의(기본 `bytes_pct`)와 값(기본 0.01)
+  - [ ] `--train-max-rows`(기본 전체)
   - [ ] 임계값 기준 구간 `train` / `test`(기본 train)
   - [ ] tail_sec(기본 0)
   - [ ] 모델(지금은 `rf`만)
@@ -67,12 +70,12 @@ S3과 S4의 범위는 plan의 원래 목표 문구보다 커졌다. spec을 쓸 
   - [ ] reg 보조 지표의 바이트 임계값 `reg_thr_value`: `bytes_pct`·`bytes_fixed`에서는 thr_value와 같다. `pkts_pct`에서는 같은 p와 같은 기준 구간으로 구한 byte_count 백분위수다(2절 ④).
 - 출력:
   - [ ] 표준 출력: 2절 ④ 예시 형식
-  - [ ] 결과 CSV: 2절 ④의 24열을 그 순서로 한 행 덧붙인다. 파일이 없으면 헤더부터 쓴다. N/A는 빈 값으로 쓴다.
+  - [ ] 결과 CSV: 2절 ④의 26열을 그 순서로 한 행 덧붙인다. 파일이 없으면 헤더부터 쓴다. N/A는 빈 값으로 쓴다. 열이 바뀌었으므로 이전 열 수로 쓴 기존 파일에 이어 쓰지 않고 새 파일에 쓴다.
 - 테스트 (합성 flow 표로 끝까지 실행):
   - [ ] precision/recall/F1/TNR ∈ [0, 1]
   - [ ] MAE는 0 이상의 유한값
   - [ ] coverage ∈ [0, 1], reduction ≥ 1 또는 N/A
-  - [ ] 결과 CSV에 24열 헤더와 행 하나가 생기고, 두 번 실행하면 행이 둘이 됨
+  - [ ] 결과 CSV에 26열 헤더와 행 하나가 생기고, 두 번 실행하면 행이 둘이 됨
   - [ ] test CSV를 따로 준 실행이 동작함
   - [ ] `pkts_pct`에서 reg_thr_value가 채워지고 reg 지표가 계산됨
 
@@ -133,7 +136,13 @@ flow 표 CSV  (data/processed/flows.csv, 처음 10개 데이터 패킷까지 저
      - 페이로드 길이 > 0인 패킷 가운데 처음 N_max = 10개의 페이로드 길이와 도착 간격
      - 페이로드 길이는 헤더 필드로 계산한다(0절 S2 식). MAWI는 페이로드를 잘라 저장하므로 캡처 길이를 쓰지 않는다.
   4. 시작시각 오름차순으로 정렬해 CSV로 쓴다.
-- 선택 인자: 읽을 최대 패킷 수(큰 MAWI 파일 앞부분만 쓰기 위함), N_max(기본 10).
+- 선택 인자: 읽을 최대 패킷 수(큰 MAWI 파일 앞부분만 쓰기 위함), N_max(기본 10), `--sample-rate r`(0 < r ≤ 1, 기본 1.0).
+- flow 해시 샘플링 (`--sample-rate r`, r < 1):
+  - 방향 5-tuple의 crc32 해시로 flow를 결정적으로 고른다. 같은 입력이면 항상 같은 flow가 뽑힌다. 고른 flow의 패킷은 전부 유지한다.
+  - CLI는 `<출력 CSV>.meta.json`에 `{"sample_rate": r}`을 쓴다. train은 이 파일을 읽어 결과 CSV의 `sample_rate` 열에 기록한다. 파일이 없으면 1.0이다. train CSV와 test CSV의 sample_rate가 다르면 오류다.
+  - 근거: 2026-10-18 trace는 gz 6.1GB, 2.4억 패킷이다. 샘플링 없이는 flow dict가 약 33GB 필요할 것으로 추정한다(가정; 2012 trace 측정은 flow 258만 개에서 최대 4.8GB, 10.5분). RAM은 15.6GB다.
+  - 패킷은 전부 읽으므로 시간은 거의 줄지 않고 메모리가 준다.
+  - 비율 지표(precision, recall, F1)는 영향이 없다고 본다. table_reduction 같은 절대 규모 지표는 sample_rate로 나눠 해석한다.
 - 출력: CSV, 헤더 포함, flow 1개가 1행.
 
 | 열 | 형식 | 설명 |
@@ -168,7 +177,7 @@ flow 표 CSV  (data/processed/flows.csv, 처음 10개 데이터 패킷까지 저
 
 | 정의 | 값 | 임계값 | 라벨 = 1 조건 |
 | --- | --- | --- | --- |
-| `bytes_pct` (기본) | 상위 비율 p (기본 0.10) | 기준 구간 byte_count의 (1 − p) 백분위수 | byte_count ≥ 임계값 |
+| `bytes_pct` (기본) | 상위 비율 p (기본 0.01) | 기준 구간 byte_count의 (1 − p) 백분위수 | byte_count ≥ 임계값 |
 | `bytes_fixed` | 바이트 값 | 그 값 그대로 | byte_count ≥ 임계값 |
 | `pkts_pct` | 상위 비율 p | 기준 구간 pkt_count의 (1 − p) 백분위수 | pkt_count ≥ 임계값 |
 
@@ -195,6 +204,8 @@ flow 표 CSV  (data/processed/flows.csv, 처음 10개 데이터 패킷까지 저
   - [3]도 elephant 오류에 클래스 비율 역수 가중치를 줘서 불균형을 보정했다.
   - [9]는 RobustScaler를 함께 썼지만, 트리 모델은 스케일에 영향을 받지 않아 생략한다.
 - 회귀: `RandomForestRegressor(n_estimators=100, random_state=0)`, 대상은 y_log.
+- 두 RF 모두 `n_jobs=-1`로 학습한다. 측정치(train 180만 행, n = 4 1회 41분, 최대 7GB)는 n_jobs 기본값 1일 때의 값이다.
+- `--train-max-rows N`: 필터(tail) 뒤 train이 N행보다 많으면 y 라벨 기준 층화 추출(random_state=0)한 N행으로 모델을 학습한다. 임계값, 라벨, `train_flows`는 전체 train 기준이고 test는 줄이지 않는다. 한 클래스의 양성이 층화하기에 부족하면 ValueError가 난다(비층화로 대체하지 않음).
 - 논문별 모델 참고:
   - 다른 문헌의 모델: clustering [1], 베이즈 임계값 [2], online NN·GP·oBMM [3], 선형층 NN [4], DNN/CNN/LSTM/AE [8]
   - [4]식 간단한 NN은 선택 후보로 둔다.
@@ -225,7 +236,7 @@ flow 표 CSV  (data/processed/flows.csv, 처음 10개 데이터 패킷까지 저
 - 출력 예:
 
 ```
-n=4 flows train=70000 test=30000 threshold_bytes=12345 test_elephants=2950 short_flows=0.55
+sample_rate=1.0 n=4 flows train=70000 test=30000 threshold_bytes=12345 reg_thr_value=12345 test_elephants=295 short_flows=0.55 tail_sec=0.0 train_max_rows=all
 precision=0.71 recall=0.64 f1=0.67 tnr=0.97
 clf coverage=0.82 table_reduction=9.8
 reg coverage=0.79 table_reduction=11.2
@@ -234,10 +245,11 @@ mae_log10=0.42
 
 (숫자는 형식 예시이며 실제 결과가 아니다.)
 
-- 결과 CSV (경로를 줄 때만, 실행마다 한 행 추가). 아래 순서로 총 24열이다.
-  - 설정 (11): `train_csv, test_csv, n, model, features, thr_def, thr_param, thr_fit, thr_value, reg_thr_value, tail_sec`
+- 결과 CSV (경로를 줄 때만, 실행마다 한 행 추가). 아래 순서로 총 26열이다(`train.py`의 COLUMNS와 같다). 열이 바뀌었으므로 이전 열 수의 기존 파일에 이어 쓰지 말고 새 파일을 쓴다.
+  - 설정 (13): `train_csv, test_csv, n, model, features, thr_def, thr_param, thr_fit, thr_value, reg_thr_value, tail_sec, train_max_rows, sample_rate`
   - 규모 (4): `train_flows, test_flows, test_pos, short_flows`. flow 수는 tail_sec 필터 뒤의 수다.
   - 지표 (9): `precision, recall, f1, tnr, mae_log10, clf_coverage, clf_reduction, reg_coverage, reg_reduction`
+  - `train_max_rows`는 제한을 안 줬으면 빈 값이고, `sample_rate`는 `.meta.json`이 없으면 1.0이다. table_reduction 같은 절대 규모 지표는 `sample_rate`로 나눠 해석한다.
   - `test_csv`는 시간순 분할이면 빈 값이다. `features`는 지금은 `all`만 쓴다(R4에서 묶음 제거 시 `-timing` 같은 값). N/A는 빈 값으로 쓴다.
 
 ### 실행 형태
@@ -245,13 +257,15 @@ mae_log10=0.42
 프로젝트 루트에서 모듈로 실행한다. 아래는 구현된 실제 CLI다(README와 같다).
 
 ```
-python -m flowpred.preprocess <pcap 경로> <출력 CSV 경로> [최대 패킷 수]
+python -m flowpred.preprocess <pcap 경로> <출력 CSV 경로> [최대 패킷 수] [--sample-rate r]
 python -m flowpred.train TRAIN_CSV [--test TEST_CSV] [--n 4]
-    [--thr-def bytes_pct|bytes_fixed|pkts_pct] [--thr-param 0.10]
-    [--thr-fit train|test] [--tail-sec 0] [--model rf] [--out RESULTS_CSV]
+    [--thr-def bytes_pct|bytes_fixed|pkts_pct] [--thr-param 0.01]
+    [--thr-fit train|test] [--tail-sec 0] [--train-max-rows N]
+    [--model rf] [--out RESULTS_CSV]
 ```
 
 - 위치 인자는 `TRAIN_CSV` 하나다. `--thr-param`은 `*_pct`에서 상위 비율 p, `bytes_fixed`에서 바이트 값이다.
+- `--sample-rate`를 주면 전처리가 `<출력 CSV>.meta.json`도 쓴다(2절 ①).
 - `src/`는 패키지로 설치하지 않으므로 모듈 실행 시 `PYTHONPATH=src`가 필요하다. pytest는 각 테스트 파일이 `src`를 `sys.path`에 직접 넣는다.
 
 ## 3. 실험 계획
@@ -260,7 +274,7 @@ python -m flowpred.train TRAIN_CSV [--test TEST_CSV] [--n 4]
 
 ### 3.1 기본 베이스라인 묶음 (2026.12, 최소 베이스라인 완료 조건)
 
-공통 설정: MAWI trace 1개, 시간순 70/30, `bytes_pct` 0.10, 임계값 기준 구간 train, tail_sec = 0, `rf`.
+공통 설정: MAWI trace 1개, 시간순 70/30, `bytes_pct` 0.01(상위 1%), 임계값 기준 구간 train, tail_sec = 0, `rf`.
 
 | 실험 | 내용 | 출처 | 결과 표 |
 | --- | --- | --- | --- |
@@ -274,13 +288,14 @@ E1–E3은 S2–S4 산출물만으로 실행한다(5회 실행).
 
 | 실험 | RQ | 입력 | 바꾸는 것 | 고정하는 것 | 주 지표 | 결과 표 형태 |
 | --- | --- | --- | --- | --- | --- | --- |
-| R1 임계값 민감도 | RQ2 | MAWI trace CSV 1개(시간순 분할). 같은 경향 확인을 위해 R2의 날짜 2–3개에서 반복 | 임계값 정의·값: `bytes_pct` p ∈ {0.01, 0.05, 0.10, 0.20}, `bytes_fixed` ∈ {10 KB, 100 KB, 1 MB, 10 MB}, `pkts_pct` p ∈ {0.01, 0.05, 0.10, 0.20}. 기준 구간 ∈ {train, test}(백분위수 정의만). n ∈ {0, 1, 3, 4, 10}. 모델 ∈ {rf, lr, hgb} | 데이터, tail_sec = 0 | F1, coverage, reduction, test_pos | (a) 임계값 설정마다 F1 최고인 n·모델과 그 값, test_pos. (b) `bytes_pct`·rf에서 행 = n, 열 = p인 F1 표. (c) 같은 설정의 train 기준 − test 기준 F1 차이. (d) clf와 reg의 coverage/reduction 비교. 단 `pkts_pct` 행의 reg 값은 바이트 기준 근사(reg_thr_value)라 clf와 같은 라벨 비교가 아님을 표에 표시 |
-| R2 날짜 간 일반화 | RQ1 | MAWI 날짜 K개(K ≥ 5: 같은 달 날짜 여러 개 + 약 1개월 뒤 + 약 1년 뒤)의 CSV | train 날짜 i × test 날짜 j. n ∈ {0, 4, 10}. 기준 구간 ∈ {train, test}. (d)에서만 tail_sec ∈ {0, 60, 120} | `bytes_pct` 0.10, `rf`, tail_sec = 0((d) 제외) | F1, coverage | (a) K×K F1 표: 대각선은 같은 날짜 안 시간순 분할, 나머지는 i로 학습·j로 평가. (b) 하락 표: test 날짜 j마다 "같은 날짜 F1 − 다른 날짜에서 학습한 F1"의 최소·중앙·최대. (c) 기준 구간 train vs test 비교로 임계값 이동분 분리. (d) 절단 영향: n = 4에서 tail_sec ∈ {0, 60, 120}마다 (b)를 다시 계산한 표(행 = tail_sec, 열 = 하락의 최소·중앙·최대, 빠진 flow 비율). tail_sec을 키울 때 하락이 줄어드는 만큼을 trace 끝 절단의 영향으로 본다 |
+| R1 임계값 민감도 | RQ2 | MAWI trace CSV 1개(시간순 분할). 같은 경향 확인을 위해 R2의 날짜 2–3개에서 반복 | 임계값 정의·값: **최소 비교 세트**는 `bytes_pct` p ∈ {0.10(누설 대조군), 0.01(기본), 0.001}과 `bytes_fixed` ∈ {100 KB}이다. 핵심은 "상위 10%·1%·0.1%와 고정 100 KB 비교"다. 여유가 있으면 `bytes_fixed` ∈ {10 KB, 1 MB, 10 MB}, `pkts_pct` p ∈ {0.01, 0.05, 0.10, 0.20}를 더한다. 기준 구간 ∈ {train, test}(백분위수 정의만). n ∈ {0, 1, 3, 4, 10}. 모델 ∈ {rf, lr, hgb} | 데이터, tail_sec = 0 | F1, coverage, reduction, test_pos | 상위 10% 행은 누설 대조군으로 표시하고 elephant 종류별 short_flows 비율(problem.md 3.2.1)을 함께 적는다. (a) 임계값 설정마다 F1 최고인 n·모델과 그 값, test_pos. (b) `bytes_pct`·rf에서 행 = n, 열 = p인 F1 표. (c) 같은 설정의 train 기준 − test 기준 F1 차이. (d) clf와 reg의 coverage/reduction 비교. 단 `pkts_pct` 행의 reg 값은 바이트 기준 근사(reg_thr_value)라 clf와 같은 라벨 비교가 아님을 표에 표시 |
+| R2 날짜 간 일반화 | RQ1 | MAWI 날짜 K개(K ≥ 5: 같은 달 날짜 여러 개 + 약 1개월 뒤 + 약 1년 뒤)의 CSV | train 날짜 i × test 날짜 j. n ∈ {0, 4, 10}. 기준 구간 ∈ {train, test}. (d)에서만 tail_sec ∈ {0, 60, 120} | `bytes_pct` 0.01, `rf`, tail_sec = 0((d) 제외) | F1, coverage | (a) K×K F1 표: 대각선은 같은 날짜 안 시간순 분할, 나머지는 i로 학습·j로 평가. (b) 하락 표: test 날짜 j마다 "같은 날짜 F1 − 다른 날짜에서 학습한 F1"의 최소·중앙·최대. (c) 기준 구간 train vs test 비교로 임계값 이동분 분리. (d) 절단 영향: n = 4에서 tail_sec ∈ {0, 60, 120}마다 (b)를 다시 계산한 표(행 = tail_sec, 열 = 하락의 최소·중앙·최대, 빠진 flow 비율). tail_sec을 키울 때 하락이 줄어드는 만큼을 trace 끝 절단의 영향으로 본다 |
 | R3 데이터셋 간 일반화 | RQ1 | MAWI CSV와 CAIDA CSV (CAIDA 승인 시에만) | MAWI → CAIDA, CAIDA → MAWI. n ∈ {0, 4, 10} | R2와 같음 | F1, coverage | R2 (a)(b)와 같은 형태 |
-| R4 특징 기여 | RQ3 | R2의 날짜 CSV | 특징 묶음 제거(header / size / timing을 하나씩 뺌). 같은 날짜 test와 다른 날짜 test 각각에서 permutation importance(scikit-learn `permutation_importance`, scoring = F1) | n = 4, `bytes_pct` 0.10, `rf` | ΔF1 | 행 = 특징 묶음, 열 = 같은 날짜 ΔF1, 다른 날짜 ΔF1(중앙값) |
+| R4 특징 기여 | RQ3 | R2의 날짜 CSV | 특징 묶음 제거(header / size / timing을 하나씩 뺌). 같은 날짜 test와 다른 날짜 test 각각에서 permutation importance(scikit-learn `permutation_importance`, scoring = F1) | n = 4, `bytes_pct` 0.01, `rf` | ΔF1 | 행 = 특징 묶음, 열 = 같은 날짜 ΔF1, 다른 날짜 ΔF1(중앙값) |
 
 - R1의 기준 구간 test 설정과 R2·R3의 기준 구간 test 설정은 분석용이다. 성능 수치로 보고하지 않고, train 기준 결과와의 차이(임계값 이동 효과)로만 쓴다.
-- R1의 `bytes_fixed` 값은 [3]이 쓴 범위(10 Kb–1 Mb, 본문 표기)를 참고했다. 백본 링크라 10 MB까지 넓혀 바이트 단위로 정했다.
+- R1의 `bytes_fixed` 값은 [3]이 쓴 범위(10 Kb–1 Mb, 본문 표기)를 참고했다. 최소 세트의 100 KB는 [3]의 라우팅 실험 값이다. 백본 링크라 선택 값은 10 MB까지 넓혀 바이트 단위로 정했다.
+- R1에서 sample_rate가 다른 CSV를 섞지 않는다. table_reduction은 sample_rate로 나눠 해석한다(2절 ①).
 - `pkts_pct`는 [2]의 패킷 수 기준 정의를 백분위수 형태로 옮긴 것이다. [2]의 원래 정의(전체 패킷의 0.1%)는 양성이 너무 적어 쓰지 않는다(problem.md 3.2).
 - 결과 표에는 항상 test_pos를 함께 적는다(problem.md 8.4).
 
@@ -333,7 +348,7 @@ network_pj/
 
 ## 5. CAIDA 연결 지점
 
-CAIDA는 ①의 입력만 다르다. pcap 링크 타입이 raw IP이면 Ethernet 헤더 없이 IP부터 파싱하는 분기를 ①에 추가하고, 출력 CSV 형식(2절 표)은 그대로 둔다. ②–④는 고치지 않는다. 임계값을 비율(상위 10%)로 정하므로 데이터셋별 양성 비율이 같아 R3 비교가 가능하다 [9]. 승인이 나지 않으면 R3은 하지 않고 R2로 대신한다(problem.md 8.4).
+CAIDA는 ①의 입력만 다르다. pcap 링크 타입이 raw IP이면 Ethernet 헤더 없이 IP부터 파싱하는 분기를 ①에 추가하고, 출력 CSV 형식(2절 표)은 그대로 둔다. ②–④는 고치지 않는다. 임계값을 비율(상위 1%)로 정하므로 데이터셋별 양성 비율이 같아 R3 비교가 가능하다 [9]. 승인이 나지 않으면 R3은 하지 않고 R2로 대신한다(problem.md 8.4).
 
 ## 6. 일정
 

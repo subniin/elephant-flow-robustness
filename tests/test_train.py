@@ -46,15 +46,21 @@ def check(r):
 
 
 def test_split_run(csvs):
-    r = run(csvs[0])
+    # 300 synthetic rows: top 1% (default) can leave 0 test positives, so use p=0.10
+    r = run(csvs[0], thr_param=0.10)
     check(r)
     assert r["train_flows"] == 210 and r["test_flows"] == 90
 
 
 def test_separate_test_csv(csvs):
-    r = run(csvs[0], csvs[1])
+    r = run(csvs[0], csvs[1], thr_param=0.10)
     check(r)
     assert r["train_flows"] == 300 and r["test_flows"] == 300
+
+
+def test_default_thr_param_is_1pct(csvs):
+    r = run(csvs[0])
+    assert r["thr_param"] == 0.01
 
 
 def test_pkts_pct_reg_thr(csvs):
@@ -66,11 +72,66 @@ def test_pkts_pct_reg_thr(csvs):
 
 def test_cli_results_csv(csvs, tmp_path, capsys):
     out = tmp_path / "res.csv"
-    main([str(csvs[0]), "--out", str(out)])
+    main([str(csvs[0]), "--thr-param", "0.10", "--out", str(out)])
     assert "precision=" in capsys.readouterr().out
     df = pd.read_csv(out)
-    assert list(df.columns) == COLUMNS and len(COLUMNS) == 24 and len(df) == 1
-    main([str(csvs[0]), "--test", str(csvs[1]), "--out", str(out)])
+    assert list(df.columns) == COLUMNS and len(COLUMNS) == 26 and len(df) == 1
+    main([str(csvs[0]), "--test", str(csvs[1]), "--thr-param", "0.10", "--out", str(out)])
     df = pd.read_csv(out)
     assert len(df) == 2 and pd.isna(df["test_csv"][0])
     assert df["test_csv"][1] == str(csvs[1])
+
+
+def test_train_max_rows(csvs, tmp_path):
+    full = run(csvs[0], csvs[1], thr_param=0.10)
+    r = run(csvs[0], csvs[1], thr_param=0.10, train_max_rows=100)
+    assert r["n_train_used"] == 100 and full["n_train_used"] == 300
+    assert r["train_flows"] == 300 and r["test_flows"] == 300
+    assert r["thr_value"] == full["thr_value"]
+    check(r)
+    r2 = run(csvs[0], csvs[1], thr_param=0.10, train_max_rows=100)
+    assert r2 == pytest.approx(r, rel=1e-9, nan_ok=True)  # n_jobs=-1: last-digit float noise
+    assert run(csvs[0], csvs[1], thr_param=0.10, train_max_rows=1000)["n_train_used"] == 300
+    out = tmp_path / "res.csv"
+    main([str(csvs[0]), "--test", str(csvs[1]), "--thr-param", "0.10",
+          "--train-max-rows", "100", "--out", str(out)])
+    main([str(csvs[0]), "--thr-param", "0.10", "--out", str(out)])
+    df = pd.read_csv(out)
+    assert df["train_max_rows"][0] == 100 and pd.isna(df["train_max_rows"][1])
+
+
+def test_train_max_rows_keeps_positive_ratio(csvs):
+    from flowpred import train
+    seen = {}
+    orig = train.evaluate
+
+    def spy(Xtr, ytr, *a):
+        seen["n"], seen["pos"] = len(ytr), int(ytr.sum())
+        return orig(Xtr, ytr, *a)
+
+    train.evaluate = spy
+    try:
+        run(csvs[0], csvs[1], thr_param=0.10)
+        n0, p0 = seen["n"], seen["pos"]
+        run(csvs[0], csvs[1], thr_param=0.10, train_max_rows=100)
+    finally:
+        train.evaluate = orig
+    assert seen["n"] == 100 and abs(seen["pos"] - p0 * 100 / n0) <= 1
+
+
+def test_sample_rate_meta(csvs, tmp_path, capsys):
+    import json
+    assert run(csvs[0], csvs[1], thr_param=0.10)["sample_rate"] == 1.0  # no meta
+    for c in csvs:
+        Path(str(c) + ".meta.json").write_text(json.dumps({"sample_rate": 0.25}))
+    out = tmp_path / "res.csv"
+    r = main([str(csvs[0]), "--test", str(csvs[1]), "--thr-param", "0.10", "--out", str(out)])
+    assert r["sample_rate"] == 0.25
+    assert capsys.readouterr().out.splitlines()[0].startswith("sample_rate=0.25 ")
+    assert pd.read_csv(out)["sample_rate"][0] == 0.25
+    Path(str(csvs[1]) + ".meta.json").write_text(json.dumps({"sample_rate": 0.5}))
+    with pytest.raises(ValueError):
+        run(csvs[0], csvs[1], thr_param=0.10)
+    Path(str(csvs[1]) + ".meta.json").unlink()  # missing test meta = 1.0 != 0.25
+    with pytest.raises(ValueError):
+        run(csvs[0], csvs[1], thr_param=0.10)

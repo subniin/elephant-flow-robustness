@@ -69,7 +69,7 @@ PYTHONPATH=src python -m flowpred.preprocess ...
 ### 1. 전처리 (pcap → flow 표 CSV)
 
 ```
-python -m flowpred.preprocess <pcap 경로> <출력 CSV 경로> [최대 패킷 수]
+python -m flowpred.preprocess <pcap 경로> <출력 CSV 경로> [최대 패킷 수] [--sample-rate r]
 ```
 
 예: 파일 앞부분 100만 패킷만 쓰기
@@ -80,9 +80,17 @@ PYTHONPATH=src python -m flowpred.preprocess data/raw/<파일>.pcap.gz data/proc
 
 최대 패킷 수를 생략하면 파일 전체를 읽습니다. `.pcap`과 `.pcap.gz`를 모두 받습니다. 현재는 Ethernet 링크 타입만 지원합니다.
 
+메모리가 모자라면 `--sample-rate r`(0 < r ≤ 1, 기본 1.0)로 flow를 해시 샘플링합니다. 방향 5-tuple의 crc32로 flow를 결정적으로 고르고, 고른 flow의 패킷은 전부 유지합니다. 출력 옆에 `<출력 CSV>.meta.json`(`{"sample_rate": r}`)도 씁니다. train은 이 파일을 읽어 결과 CSV의 `sample_rate` 열에 기록하고, train과 test의 sample_rate가 다르면 오류를 냅니다.
+
+```bash
+PYTHONPATH=src python -m flowpred.preprocess data/raw/<파일>.pcap.gz data/processed/flows.csv --sample-rate 0.1
+```
+
+2026-10-18 trace는 gz 6.1GB, 2.4억 패킷이라 샘플링 없이는 flow dict가 약 33GB 필요할 것으로 추정합니다(가정; 2012 trace 측정은 flow 258만 개에서 최대 4.8GB, 10.5분). 이 머신의 RAM은 15.6GB입니다. 샘플링해도 패킷은 전부 읽으므로 시간은 거의 줄지 않고 메모리가 줍니다. precision/recall/F1 같은 비율 지표는 영향이 없다고 보지만, table_reduction 같은 절대 규모 지표는 sample_rate로 나눠 해석해야 합니다.
+
 ### 2. 학습·평가
 
-인자 이름은 `src/flowpred/train.py`의 `--help`와 같습니다. 학습 CSV만 필수 위치 인자입니다. `--test`를 주지 않으면 같은 CSV를 시작시각 순 70/30으로 나눕니다. 기본 `--n`은 4, 기본 임계값은 `bytes_pct` 0.10(train 바이트 상위 10%)입니다.
+인자 이름은 `src/flowpred/train.py`의 `--help`와 같습니다. 학습 CSV만 필수 위치 인자입니다. `--test`를 주지 않으면 같은 CSV를 시작시각 순 70/30으로 나눕니다. 기본 `--n`은 4, 기본 임계값은 `bytes_pct` 0.01(train 바이트 상위 1%)입니다. 상위 10%는 데이터 패킷이 4개 미만인 elephant가 많아 정답이 특징에서 계산되는 누설 구조라 기본에서 뺐습니다(`docs/problem.md` 3.2.1).
 
 기본 실행 (같은 CSV를 시간순 70/30으로 나눔):
 
@@ -99,10 +107,18 @@ PYTHONPATH=src python -m flowpred.train data/processed/flows_day1.csv --test dat
 임계값을 패킷 수 상위 비율로 정하는 실행 (`--thr-param`은 `*_pct`에서 상위 비율 p, `bytes_fixed`에서는 바이트 값):
 
 ```bash
-PYTHONPATH=src python -m flowpred.train data/processed/flows.csv --thr-def pkts_pct --thr-param 0.10
+PYTHONPATH=src python -m flowpred.train data/processed/flows.csv --thr-def pkts_pct --thr-param 0.01
 ```
 
-결과를 CSV에 누적 (실행마다 한 행이 추가되며, 파일이 없으면 헤더부터 씁니다):
+train 행이 너무 많을 때 학습 행 수를 제한하는 실행 (`--train-max-rows`, 기본 전체):
+
+```bash
+PYTHONPATH=src python -m flowpred.train data/processed/flows.csv --train-max-rows 500000
+```
+
+`--train-max-rows N`은 train이 N행보다 많으면 y 기준 층화 추출한 N행으로 학습합니다. 임계값은 전체 train으로 구하고 test는 줄이지 않습니다. 양성이 부족해 층화할 수 없으면 ValueError가 납니다. RandomForest는 `n_jobs=-1`로 학습합니다. 측정치(train 180만 행, n = 4 1회 41분, 최대 7GB)는 n_jobs 기본값 1일 때의 값입니다.
+
+결과를 CSV에 누적 (실행마다 한 행이 추가되며, 파일이 없으면 헤더부터 씁니다. 결과 CSV는 26열입니다. 열이 바뀌었으므로 이전 열 수의 기존 파일에 이어 쓰지 말고 새 파일을 쓰세요):
 
 ```bash
 PYTHONPATH=src python -m flowpred.train data/processed/flows.csv --n 0 --out results/runs.csv
@@ -146,7 +162,7 @@ network_pj/
 - flow: 단방향 5-tuple, IPv4 TCP/UDP. 전송 계층 페이로드가 0보다 큰 패킷만 "데이터 패킷"으로 셉니다.
 - 예측 시점: 처음 N = 4개 데이터 패킷 (기본). N ∈ {0, 1, 3, 4, 10}을 비교 가능. N = 0은 헤더(proto·포트)만 쓰는 기준선.
 - 특징: proto, src_port, dst_port, 처음 N개 데이터 패킷의 페이로드 크기와 도착 간격. IP 주소와 flow 종료 후 통계는 쓰지 않습니다.
-- elephant: train 구간 바이트 수 상위 10%. test에는 train에서 구한 임계값을 그대로 적용합니다.
+- elephant: train 구간 바이트 수 상위 1%(상위 10%는 누설 대조군). test에는 train에서 구한 임계값을 그대로 적용합니다.
 - 모델: RandomForest (분류, class_weight balanced) + RandomForest (회귀, log10 바이트 수).
 - 지표: elephant 기준 precision, recall, F1, log10 바이트 MAE, 보조로 TNR, 트래픽 커버리지, flow table 감소 배수.
 
