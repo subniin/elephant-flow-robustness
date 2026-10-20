@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from flowpred.train import COLUMNS, main, run
+from flowpred.train import COLUMNS, f1_bootstrap_ci, main, run, stratified_recall
 
 
 def synth(rows=300, seed=0, t0=0.0):
@@ -73,9 +73,12 @@ def test_pkts_pct_reg_thr(csvs):
 def test_cli_results_csv(csvs, tmp_path, capsys):
     out = tmp_path / "res.csv"
     main([str(csvs[0]), "--thr-param", "0.10", "--out", str(out)])
-    assert "precision=" in capsys.readouterr().out
+    o = capsys.readouterr().out
+    assert "precision=" in o
+    assert all(k + "=" in o for k in ("el_short_frac", "recall_long", "recall_short"))
+    assert "seed=0 f1_ci=[" in o
     df = pd.read_csv(out)
-    assert list(df.columns) == COLUMNS and len(COLUMNS) == 26 and len(df) == 1
+    assert list(df.columns) == COLUMNS and len(COLUMNS) == 32 and len(df) == 1
     main([str(csvs[0]), "--test", str(csvs[1]), "--thr-param", "0.10", "--out", str(out)])
     df = pd.read_csv(out)
     assert len(df) == 2 and pd.isna(df["test_csv"][0])
@@ -135,3 +138,73 @@ def test_sample_rate_meta(csvs, tmp_path, capsys):
     Path(str(csvs[1]) + ".meta.json").unlink()  # missing test meta = 1.0 != 0.25
     with pytest.raises(ValueError):
         run(csvs[0], csvs[1], thr_param=0.10)
+
+
+def test_columns_tail():
+    assert COLUMNS[-7:] == ["reg_reduction", "el_short_frac", "recall_long", "recall_short",
+                            "seed", "f1_lo", "f1_hi"]
+    assert COLUMNS[-3:] == ["seed", "f1_lo", "f1_hi"]
+
+
+def test_seed_passed_and_reproducible(csvs, tmp_path, capsys):
+    from flowpred import train
+    seen = []
+    orig = train.RandomForestClassifier
+
+    def spy(*a, **k):
+        seen.append(k["random_state"])
+        return orig(*a, **k)
+
+    train.RandomForestClassifier = spy
+    try:
+        run(csvs[0], csvs[1], thr_param=0.10, seed=7)
+        run(csvs[0], csvs[1], thr_param=0.10)
+    finally:
+        train.RandomForestClassifier = orig
+    assert seen == [7, 0]
+    a = run(csvs[0], csvs[1], thr_param=0.10, seed=3, train_max_rows=100)
+    b = run(csvs[0], csvs[1], thr_param=0.10, seed=3, train_max_rows=100)
+    assert a == pytest.approx(b, rel=1e-9, nan_ok=True) and a["seed"] == 3
+    out = tmp_path / "s.csv"
+    main([str(csvs[0]), "--thr-param", "0.10", "--seed", "5", "--out", str(out)])
+    assert "seed=5 f1_ci=[" in capsys.readouterr().out
+    row = pd.read_csv(out).iloc[0]
+    assert row["seed"] == 5 and row["f1_lo"] <= row["f1"] <= row["f1_hi"]
+
+
+def test_f1_bootstrap_ci():
+    y = np.array([1, 1, 0, 0, 1, 0, 0, 1] * 20)
+    assert f1_bootstrap_ci(y, y, 0) == (1.0, 1.0)
+    assert f1_bootstrap_ci(np.zeros(10), np.ones(10), 0) == (None, None)
+    pred = np.array([1, 0, 0, 1, 1, 0, 0, 1] * 20)
+    lo, hi = f1_bootstrap_ci(y, pred, 0)
+    f1 = 2 * 3 / (2 * 3 + 1 + 1)  # tp=3 fp=1 fn=1 per 8 rows
+    assert lo <= f1 <= hi and lo < hi
+    assert f1_bootstrap_ci(y, pred, 0) == (lo, hi)
+
+
+def test_stratified_recall_mixed():
+    # n=3; elephants idx 0..3: n_seen 1,2 (short), 3,5 (long); idx4 mouse
+    y = [1, 1, 1, 1, 0]
+    n_seen = [1, 2, 3, 5, 1]
+    pred = [1, 0, 1, 0, 1]
+    assert stratified_recall(y, pred, n_seen, 3) == (0.5, 0.5, 0.5)
+
+
+def test_stratified_recall_one_group_only():
+    assert stratified_recall([1, 1], [1, 0], [1, 2], 3) == (1.0, None, 0.5)  # short only
+    assert stratified_recall([1, 1], [1, 0], [4, 5], 3) == (0.0, 0.5, None)  # long only
+    assert stratified_recall([0, 0], [1, 0], [1, 5], 3) == (None, None, None)  # no elephant
+
+
+def test_stratified_recall_n0():
+    assert stratified_recall([1, 1, 0], [1, 0, 0], None, 0) == (0.0, 0.5, None)
+
+
+def test_evaluate_calls_stratified(csvs):
+    r = run(csvs[0], csvs[1], thr_param=0.10)
+    for k in ("el_short_frac", "recall_long", "recall_short"):
+        assert r[k] is None or 0 <= r[k] <= 1
+    r0 = run(csvs[0], csvs[1], thr_param=0.10, n=0)
+    assert r0["el_short_frac"] == 0 and r0["recall_short"] is None
+    assert r0["recall_long"] == pytest.approx(r0["recall"])

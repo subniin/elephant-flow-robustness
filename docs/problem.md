@@ -129,7 +129,7 @@ flow가 끝난 뒤에야 크기를 알면 대응이 늦다. 그래서 flow 초�
 
 한계:
 - 위 수치는 한 trace(2012-04-09)에서만 나왔다. 다른 날짜와 최근 trace에서 다시 확인해야 한다.
-- 상위 1%에서도 일부 elephant는 데이터 패킷이 N개 미만이다. 결과를 보고할 때는 elephant 종류별로 short_flows(n_seen < n) 비율을 층화해서 함께 보고해야 한다.
+- 상위 1%에서도 일부 elephant는 데이터 패킷이 N개 미만이다. 이를 위해 결과에 층화 지표를 함께 낸다(구현됨): test elephant(정답 y = 1) 중 `n_seen` < n인 flow를 short, 나머지를 long으로 나눈다. `el_short_frac` = short elephant 수 / test elephant 수, `recall_long` = long elephant 중 분류기가 1로 예측한 비율, `recall_short` = short elephant 중 분류기가 1로 예측한 비율이다. 분모가 0이면 N/A(CSV는 빈 값)다. n = 0이면 `n_seen` 열이 없으므로 모든 elephant를 long으로 보고 `el_short_frac` = 0, `recall_short` = N/A, `recall_long` = 전체 recall이다.
 
 ### 3.3 예측 시점: 처음 N개 데이터 패킷 (기본 N = 4)
 
@@ -161,6 +161,7 @@ flow가 끝난 뒤에야 크기를 알면 대응이 늦다. 그래서 flow 초�
   - 무작위 분할은 같은 시간대의 비슷한 flow가 양쪽에 섞여 성능을 부풀릴 수 있다. 운영처럼 과거로 학습하고 미래를 예측하는 조건에 맞추려고 시간순 분할을 쓴다.
   - 그 결과 수치는 무작위 분할 문헌보다 낮게 나올 수 있다.
 - 주 지표 (분류): elephant를 양성으로 한 precision, recall, F1.
+  - 작은 F1 차이(예: n = 3과 n = 4)가 의미 있는지 보려고 F1의 95% 부트스트랩 신뢰구간을 함께 낸다(design.md 2절 ④). test flow를 복원추출해 F1을 200회 계산하고 2.5, 97.5 백분위수를 쓴다. 이 구간은 test 표본 변동만 반영하므로, 모델 학습 시드 변동은 `--seed`를 바꿔 반복 실행해 따로 본다.
   - 클래스 비율이 9:1이라 accuracy는 모두 mice로 찍어도 0.9가 되므로 보고하지 않는다. [8]은 accuracy만 보고했다.
   - [2]는 false positive와 false negative 사이의 절충을 다뤘고, [3]은 TPR(= recall)과 TNR을 함께 보고했다. 이를 따라 precision과 recall을 따로 적는다.
 - 주 지표 (회귀): test 구간에서 |log10(예측 바이트) − log10(실제 바이트)|의 평균(MAE). 1.0은 평균 10배 오차를 뜻한다.

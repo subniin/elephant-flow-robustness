@@ -60,22 +60,25 @@ S3과 S4의 범위는 plan의 원래 목표 문구보다 커졌다. spec을 쓸 
   - [ ] n(기본 4)
   - [ ] 임계값 정의(기본 `bytes_pct`)와 값(기본 0.01)
   - [ ] `--train-max-rows`(기본 전체)
+  - [ ] `--seed`(기본 0): 모델·층화 샘플링·부트스트랩 시드
   - [ ] 임계값 기준 구간 `train` / `test`(기본 train)
   - [ ] tail_sec(기본 0)
   - [ ] 모델(지금은 `rf`만)
   - [ ] 결과 CSV 경로(선택)
 - 처리:
   - [ ] 파일마다 `drop_tail` → (test CSV가 없으면) 분할 → 기준 구간에서 임계값 구하기 → 라벨 → 학습·평가
-  - [ ] 분류기 RandomForestClassifier(100, balanced, random_state=0)와 회귀기 RandomForestRegressor(100, random_state=0)
+  - [ ] 분류기 RandomForestClassifier(100, balanced, random_state=seed)와 회귀기 RandomForestRegressor(100, random_state=seed), seed 기본 0
   - [ ] reg 보조 지표의 바이트 임계값 `reg_thr_value`: `bytes_pct`·`bytes_fixed`에서는 thr_value와 같다. `pkts_pct`에서는 같은 p와 같은 기준 구간으로 구한 byte_count 백분위수다(2절 ④).
 - 출력:
   - [ ] 표준 출력: 2절 ④ 예시 형식
-  - [ ] 결과 CSV: 2절 ④의 26열을 그 순서로 한 행 덧붙인다. 파일이 없으면 헤더부터 쓴다. N/A는 빈 값으로 쓴다. 열이 바뀌었으므로 이전 열 수로 쓴 기존 파일에 이어 쓰지 않고 새 파일에 쓴다.
+  - [ ] 결과 CSV: 2절 ④의 32열을 그 순서로 한 행 덧붙인다. 파일이 없으면 헤더부터 쓴다. N/A는 빈 값으로 쓴다. 열이 바뀌었으므로 이전 열 수로 쓴 기존 파일에 이어 쓰지 않고 새 파일에 쓴다.
 - 테스트 (합성 flow 표로 끝까지 실행):
   - [ ] precision/recall/F1/TNR ∈ [0, 1]
   - [ ] MAE는 0 이상의 유한값
   - [ ] coverage ∈ [0, 1], reduction ≥ 1 또는 N/A
-  - [ ] 결과 CSV에 26열 헤더와 행 하나가 생기고, 두 번 실행하면 행이 둘이 됨
+  - [ ] 결과 CSV에 32열 헤더와 행 하나가 생기고, 두 번 실행하면 행이 둘이 됨
+  - [ ] seed가 두 RF의 `random_state`와 층화 샘플링에 전달됨, 같은 seed면 결과가 같음
+  - [ ] F1 부트스트랩 구간: 완벽 예측이면 lo = hi = 1, 양성 0개면 N/A, lo ≤ F1 ≤ hi
   - [ ] test CSV를 따로 준 실행이 동작함
   - [ ] `pkts_pct`에서 reg_thr_value가 채워지고 reg 지표가 계산됨
 
@@ -199,13 +202,13 @@ flow 표 CSV  (data/processed/flows.csv, 처음 10개 데이터 패킷까지 저
 
 ### ③ 모델
 
-- 분류: `RandomForestClassifier(n_estimators=100, class_weight="balanced", random_state=0)`.
+- 분류: `RandomForestClassifier(n_estimators=100, class_weight="balanced", random_state=seed)`. `seed`는 `--seed`(기본 0)다.
   - [9]가 cross-domain 실험에서 쓴 것과 같은 트리 수와 class_weight 설정이다.
   - [3]도 elephant 오류에 클래스 비율 역수 가중치를 줘서 불균형을 보정했다.
   - [9]는 RobustScaler를 함께 썼지만, 트리 모델은 스케일에 영향을 받지 않아 생략한다.
-- 회귀: `RandomForestRegressor(n_estimators=100, random_state=0)`, 대상은 y_log.
+- 회귀: `RandomForestRegressor(n_estimators=100, random_state=seed)`, 대상은 y_log.
 - 두 RF 모두 `n_jobs=-1`로 학습한다. 측정치(train 180만 행, n = 4 1회 41분, 최대 7GB)는 n_jobs 기본값 1일 때의 값이다.
-- `--train-max-rows N`: 필터(tail) 뒤 train이 N행보다 많으면 y 라벨 기준 층화 추출(random_state=0)한 N행으로 모델을 학습한다. 임계값, 라벨, `train_flows`는 전체 train 기준이고 test는 줄이지 않는다. 한 클래스의 양성이 층화하기에 부족하면 ValueError가 난다(비층화로 대체하지 않음).
+- `--train-max-rows N`: 필터(tail) 뒤 train이 N행보다 많으면 y 라벨 기준 층화 추출(random_state=seed)한 N행으로 모델을 학습한다. 임계값, 라벨, `train_flows`는 전체 train 기준이고 test는 줄이지 않는다. 한 클래스의 양성이 층화하기에 부족하면 ValueError가 난다(비층화로 대체하지 않음).
 - 논문별 모델 참고:
   - 다른 문헌의 모델: clustering [1], 베이즈 임계값 [2], online NN·GP·oBMM [3], 선형층 NN [4], DNN/CNN/LSTM/AE [8]
   - [4]식 간단한 NN은 선택 후보로 둔다.
@@ -221,6 +224,7 @@ flow 표 CSV  (data/processed/flows.csv, 처음 10개 데이터 패킷까지 저
 - 주 지표:
   - `precision_score`, `recall_score`, `f1_score`(pos_label=1, zero_division=0)
   - `mean_absolute_error`(y_log 기준)
+  - F1 부트스트랩 신뢰구간(`f1_lo`, `f1_hi`): test 예측(분류기 예측 ŷ, 정답 y)에서 test 행 인덱스를 복원추출하는 일을 B = 200회 반복해 매번 F1(pos_label=1)을 계산하고, 2.5, 97.5 백분위수를 `f1_lo`, `f1_hi`로 쓴다. 복원추출 표본에 양성이 없으면 그 반복의 F1은 0으로 둔다. test 양성이 0개면 N/A(CSV는 빈 값)다. 난수는 `numpy.random.default_rng(seed)`이며 `--seed`와 같은 값이라, 같은 seed면 구간도 같다. 이 구간은 test 표본 변동만 반영하고 모델 시드 변동은 `--seed`를 바꿔 여러 번 실행해서 본다.
 - 보조 지표:
   - `tnr = recall_score(y, ŷ, pos_label=0, zero_division=0)` [3]
   - `coverage = sum(byte_count[ŷ=1]) / sum(byte_count)` [4]
@@ -232,23 +236,27 @@ flow 표 CSV  (data/processed/flows.csv, 처음 10개 데이터 패킷까지 저
     - `bytes_pct`·`bytes_fixed`: thr_value와 같다.
     - `pkts_pct`: 분류 임계값이 패킷 수라 회귀 예측(바이트)과 바로 비교할 수 없다. 그래서 같은 p와 같은 기준 구간(thr_fit)으로 구한 byte_count의 (1 − p) 백분위수를 대신 쓴다.
     - 이 경우 reg 지표는 분류 라벨(패킷 수 기준 상위 p)과 **정의가 다른 근사**다(바이트 기준 상위 p를 고른 것). 그래서 `pkts_pct` 행에서는 clf 지표와 reg 지표를 같은 라벨에 대한 비교로 읽으면 안 된다(3.2 R1 참고).
-- 함께 출력: train/test flow 수, test 양성 수, 임계값, reg_thr_value, n, tail_sec, test에서 n_seen < n인 flow 비율(short_flows).
+- 함께 출력: `seed`, F1 신뢰구간(`f1_ci`), train/test flow 수, test 양성 수, 임계값, reg_thr_value, n, tail_sec, test에서 n_seen < n인 flow 비율(short_flows), elephant short/long 층화 지표(`el_short_frac`, `recall_long`, `recall_short`).
+  - 층화 지표 정의: test elephant(정답 y = 1) 중 `n_seen` < n인 flow를 short, 나머지를 long으로 나눈다. `el_short_frac` = short elephant 수 / test elephant 수, `recall_long` = long elephant 중 분류기가 1로 예측한 비율, `recall_short` = short elephant 중 분류기가 1로 예측한 비율이다. 분모가 0이면 N/A(CSV는 빈 값)다. n = 0이면 `n_seen` 열이 없으므로 모든 elephant를 long으로 보고 `el_short_frac` = 0, `recall_short` = N/A, `recall_long` = 전체 recall이다.
 - 출력 예:
 
 ```
 sample_rate=1.0 n=4 flows train=70000 test=30000 threshold_bytes=12345 reg_thr_value=12345 test_elephants=295 short_flows=0.55 tail_sec=0.0 train_max_rows=all
 precision=0.71 recall=0.64 f1=0.67 tnr=0.97
+el_short_frac=0.30 recall_long=0.80 recall_short=0.35
 clf coverage=0.82 table_reduction=9.8
 reg coverage=0.79 table_reduction=11.2
 mae_log10=0.42
+seed=0 f1_ci=[0.61, 0.73]
 ```
 
 (숫자는 형식 예시이며 실제 결과가 아니다.)
 
-- 결과 CSV (경로를 줄 때만, 실행마다 한 행 추가). 아래 순서로 총 26열이다(`train.py`의 COLUMNS와 같다). 열이 바뀌었으므로 이전 열 수의 기존 파일에 이어 쓰지 말고 새 파일을 쓴다.
+- 결과 CSV (경로를 줄 때만, 실행마다 한 행 추가). 아래 순서로 총 32열이다(`train.py`의 COLUMNS와 같다). 열이 바뀌었으므로 이전 열 수의 기존 파일에 이어 쓰지 말고 새 파일을 쓴다.
   - 설정 (13): `train_csv, test_csv, n, model, features, thr_def, thr_param, thr_fit, thr_value, reg_thr_value, tail_sec, train_max_rows, sample_rate`
   - 규모 (4): `train_flows, test_flows, test_pos, short_flows`. flow 수는 tail_sec 필터 뒤의 수다.
-  - 지표 (9): `precision, recall, f1, tnr, mae_log10, clf_coverage, clf_reduction, reg_coverage, reg_reduction`
+  - 지표 (12): `precision, recall, f1, tnr, mae_log10, clf_coverage, clf_reduction, reg_coverage, reg_reduction, el_short_frac, recall_long, recall_short` (마지막 3개는 위 층화 지표, 분류기 예측만 층화)
+  - 재현·신뢰구간 (3): `seed, f1_lo, f1_hi`. 기존 열 순서를 바꾸지 않으려고 맨 끝에 붙인다.
   - `train_max_rows`는 제한을 안 줬으면 빈 값이고, `sample_rate`는 `.meta.json`이 없으면 1.0이다. table_reduction 같은 절대 규모 지표는 `sample_rate`로 나눠 해석한다.
   - `test_csv`는 시간순 분할이면 빈 값이다. `features`는 지금은 `all`만 쓴다(R4에서 묶음 제거 시 `-timing` 같은 값). N/A는 빈 값으로 쓴다.
 
@@ -261,7 +269,7 @@ python -m flowpred.preprocess <pcap 경로> <출력 CSV 경로> [최대 패킷 �
 python -m flowpred.train TRAIN_CSV [--test TEST_CSV] [--n 4]
     [--thr-def bytes_pct|bytes_fixed|pkts_pct] [--thr-param 0.01]
     [--thr-fit train|test] [--tail-sec 0] [--train-max-rows N]
-    [--model rf] [--out RESULTS_CSV]
+    [--model rf] [--seed 0] [--out RESULTS_CSV]
 ```
 
 - 위치 인자는 `TRAIN_CSV` 하나다. `--thr-param`은 `*_pct`에서 상위 비율 p, `bytes_fixed`에서 바이트 값이다.

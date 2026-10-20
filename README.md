@@ -6,7 +6,24 @@
 
 ## 현재 상태
 
-최소 베이스라인 파이프라인이 구현되어 있습니다: 전처리(pcap → flow 표 CSV), 라벨·특징 생성, 학습·평가(RandomForest). 실제 MAWI 데이터로 돌린 결과는 아직 없습니다. 결과는 2026.12 E1–E3 이후 추가 예정입니다.
+최소 베이스라인 파이프라인이 구현되어 있습니다: 전처리(pcap → flow 표 CSV), 라벨·특징 생성, 학습·평가(RandomForest). MAWI 2012-04-09 trace 1개로 E1–E3를 돌린 예비 결과가 아래 "예비 결과"에 있습니다. 날짜 간·데이터셋 간 결과는 아직 없습니다.
+
+## 예비 결과 (MAWI 2012-04-09, trace 1개)
+
+설정: 258만 flow, 시간순 70/30 분할, 임계값 = train 상위 1% (34,911 B), test elephant 6,982개, 기본 RandomForest. n = 3, 4, 10은 시드 5개(0–4) 평균, n = 0, 1은 시드 0 하나. F1 CI는 test flow 복원추출 200회(95%)의 평균 구간입니다.
+
+| n | F1 | 시드 간 표준편차 | F1 95% CI | precision | recall | recall(long) | short elephant 비율 |
+|---|---|---|---|---|---|---|---|
+| 0 (헤더만) | 0.166 | - | 0.160–0.171 | 0.109 | 0.342 | 0.342 | 0 |
+| 1 | 0.457 | - | 0.447–0.468 | 0.459 | 0.454 | 0.455 | 0.000 |
+| 3 | 0.656 | 0.0020 | 0.647–0.666 | 0.759 | 0.578 | 0.587 (시드 0) | 0.009 |
+| 4 | 0.677 | 0.0015 | 0.667–0.686 | 0.782 | 0.597 | 0.602 (시드 0) | 0.010 |
+| 10 | 0.755 | 0.0014 | 0.747–0.763 | 0.794 | 0.719 | 0.731 (시드 0) | 0.013 |
+
+- n이 커질수록 F1이 오릅니다. 헤더만 쓴 기준선(n = 0)과 n = 4 사이 차이가 가장 큽니다.
+- n = 3과 n = 4의 F1 차이(0.020)는 시드 변동(표준편차 약 0.002)보다 크지만, test 표본 변동을 보는 부트스트랩 CI는 약간 겹칩니다.
+- 누설 구조(데이터 패킷이 n개 미만인데 elephant인 flow)는 전체 elephant의 1.3% 이하입니다.
+- 한계: trace 1개, 단일 날짜입니다. 날짜가 바뀔 때의 변동은 이 숫자에 들어 있지 않습니다. 날짜 간 일반화(R2)와 임계값 민감도(R1)는 후속 실험입니다.
 
 ## 환경 설정
 
@@ -118,12 +135,14 @@ PYTHONPATH=src python -m flowpred.train data/processed/flows.csv --train-max-row
 
 `--train-max-rows N`은 train이 N행보다 많으면 y 기준 층화 추출한 N행으로 학습합니다. 임계값은 전체 train으로 구하고 test는 줄이지 않습니다. 양성이 부족해 층화할 수 없으면 ValueError가 납니다. RandomForest는 `n_jobs=-1`로 학습합니다. 측정치(train 180만 행, n = 4 1회 41분, 최대 7GB)는 n_jobs 기본값 1일 때의 값입니다.
 
-결과를 CSV에 누적 (실행마다 한 행이 추가되며, 파일이 없으면 헤더부터 씁니다. 결과 CSV는 26열입니다. 열이 바뀌었으므로 이전 열 수의 기존 파일에 이어 쓰지 말고 새 파일을 쓰세요):
+결과를 CSV에 누적 (실행마다 한 행이 추가되며, 파일이 없으면 헤더부터 씁니다. 결과 CSV는 32열입니다. 맨 끝 3열 `seed`, `f1_lo`, `f1_hi`는 `--seed` 값과 F1 부트스트랩 95% 신뢰구간입니다(아래 설명). 그 앞 3열 `el_short_frac`, `recall_long`, `recall_short`는 test elephant를 `n_seen` < n(short)과 그 외(long)로 나눈 비율과 그룹별 recall이며, 분모가 0이면 빈 값(N/A)이고 n = 0이면 `el_short_frac` = 0, `recall_short`는 빈 값입니다. 열이 바뀌었으므로 이전 열 수의 기존 파일에 이어 쓰지 말고 새 파일을 쓰세요):
 
 ```bash
 PYTHONPATH=src python -m flowpred.train data/processed/flows.csv --n 0 --out results/runs.csv
 PYTHONPATH=src python -m flowpred.train data/processed/flows.csv --n 4 --out results/runs.csv
 ```
+
+`--seed S`(기본 0)는 RandomForest 분류기·회귀기의 `random_state`와 `--train-max-rows` 층화 추출의 `random_state`에 쓰입니다. 기본 0은 이전 동작과 같습니다. F1 신뢰구간(`f1_lo`, `f1_hi`)은 test flow를 복원추출하는 일을 200회 반복해 매번 F1을 계산하고 2.5, 97.5 백분위수를 취한 값이며, 복원추출 표본에 양성이 없으면 그 반복의 F1은 0, test 양성이 0개면 빈 값(N/A)입니다. 부트스트랩 난수도 같은 `--seed`로 고정됩니다. 구간은 test 표본 변동만 보여 주므로, 모델 시드에 따른 변동은 `--seed`를 바꿔 반복 실행해서 확인하세요.
 
 PowerShell에서 `PYTHONPATH`를 설정했다면 `PYTHONPATH=src` 부분은 빼고 실행합니다.
 
@@ -168,7 +187,7 @@ network_pj/
 
 ## 로드맵
 
-- 2026.12: E1–E3 (기본 베이스라인, 헤더 전용 기준선, N ablation). MAWI trace 1개로 실행하고 결과를 README에 추가.
+- 2026.12: E1–E3 (기본 베이스라인, 헤더 전용 기준선, N ablation). MAWI trace 1개로 실행하고 결과를 README에 추가. (2012-04-09 예비 결과 기록 완료, 최신 trace는 다운로드 후 추가.)
 - 2027.01–03: R1–R4 (임계값 민감도, 날짜 간 일반화, 데이터셋 간 일반화(CAIDA 승인 시), 특징 기여). 자세한 내용은 `docs/design.md` 3.2절.
 
 ## 한계
