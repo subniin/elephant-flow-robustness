@@ -4,16 +4,25 @@ Only Ethernet link type is supported (MAWI). Raw-IP link type (CAIDA) is
 a later addition: add a branch here that parses from IP without Ethernet.
 
 Usage: python -m flowpred.preprocess <pcap> <out.csv> [max_packets] [--sample-rate r]
+       [--checkpoint PATH] [--every N]
 
 --sample-rate r (0<r<=1, default 1.0) keeps only flows whose directed 5-tuple
 raw-byte crc32 is < r*2**32 (deterministic across runs); kept flows keep all
 packets. The CLI also writes <out.csv>.meta.json = {"sample_rate": r}.
+
+--every N prints a progress line to stderr every N packets. With --checkpoint
+PATH the flow state is also saved there every N packets (atomic replace); if
+PATH exists the run resumes from it, and it is deleted on success.
 """
 import argparse
 import gzip
 import json
+import os
+import pickle
 import socket
 import struct
+import sys
+import time
 import zlib
 
 import dpkt
@@ -36,12 +45,24 @@ def _open(path):
     return gzip.GzipFile(fileobj=f) if magic == b"\x1f\x8b" else f
 
 
-def preprocess(pcap_path, max_packets=None, n_max=N_MAX, sample_rate=1.0):
+def preprocess(pcap_path, max_packets=None, n_max=N_MAX, sample_rate=1.0,
+               checkpoint=None, every=0):
     """Return the flow table as a DataFrame sorted by start_ts."""
     if not 0 < sample_rate <= 1:
         raise ValueError("sample_rate must be in (0, 1]")
     limit = sample_rate * 2**32
     flows = {}  # key -> [start_ts, pkts, bytes, plens, iats, last_data_ts]
+    start = 0
+    sig = {"sample_rate": sample_rate, "n_max": n_max, "max_packets": max_packets,
+           "size": os.path.getsize(pcap_path)}
+    if checkpoint and os.path.exists(checkpoint):
+        with open(checkpoint, "rb") as fh:
+            ck = pickle.load(fh)
+        if ck["sig"] != sig:
+            raise ValueError(f"checkpoint {checkpoint} was made with {ck['sig']}, now {sig}")
+        flows, start = ck["flows"], ck["next"]
+        print(f"resume from packet {start}, {len(flows)} flows", file=sys.stderr, flush=True)
+    t0 = time.time()
     with _open(pcap_path) as f:
         reader = dpkt.pcap.Reader(f)
         if reader.datalink() != dpkt.pcap.DLT_EN10MB:
@@ -49,6 +70,16 @@ def preprocess(pcap_path, max_packets=None, n_max=N_MAX, sample_rate=1.0):
         for i, (ts, buf) in enumerate(reader):
             if max_packets is not None and i >= max_packets:
                 break
+            if i < start:
+                continue
+            if every and i > start and i % every == 0:
+                print(f"packets={i} flows={len(flows)} elapsed={time.time() - t0:.0f}s",
+                      file=sys.stderr, flush=True)
+                if checkpoint:
+                    with open(checkpoint + ".tmp", "wb") as fh:
+                        pickle.dump({"sig": sig, "flows": flows, "next": i}, fh,
+                                    pickle.HIGHEST_PROTOCOL)
+                    os.replace(checkpoint + ".tmp", checkpoint)
             try:
                 ip = dpkt.ethernet.Ethernet(buf).data
             except dpkt.UnpackError:
@@ -77,6 +108,8 @@ def preprocess(pcap_path, max_packets=None, n_max=N_MAX, sample_rate=1.0):
                     fl[4].append(ts - fl[5])
                 fl[3].append(plen)
                 fl[5] = ts
+    if checkpoint and os.path.exists(checkpoint):
+        os.remove(checkpoint)
     rows = []
     for key, (ts, pk, by, plens, iats, _) in flows.items():
         plens = plens + [0] * (n_max - len(plens))
@@ -92,8 +125,12 @@ def main(argv=None):
     ap.add_argument("out_csv")
     ap.add_argument("max_packets", nargs="?", type=int)
     ap.add_argument("--sample-rate", type=float, default=1.0)
+    ap.add_argument("--checkpoint")
+    ap.add_argument("--every", type=int, default=0)
     a = ap.parse_args(argv)
-    df = preprocess(a.pcap, a.max_packets, sample_rate=a.sample_rate)
+    every = a.every or (20_000_000 if a.checkpoint else 0)
+    df = preprocess(a.pcap, a.max_packets, sample_rate=a.sample_rate,
+                    checkpoint=a.checkpoint, every=every)
     df.to_csv(a.out_csv, index=False)
     with open(a.out_csv + ".meta.json", "w") as fh:
         json.dump({"sample_rate": a.sample_rate}, fh)

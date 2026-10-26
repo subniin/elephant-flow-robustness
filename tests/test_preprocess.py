@@ -129,3 +129,46 @@ def test_cli_meta(tmp_path):
     main([str(f), str(out), "10"])  # positional max_packets, default rate
     assert json.loads(Path(str(out) + ".meta.json").read_text()) == {"sample_rate": 1.0}
     assert list(pd.read_csv(out).columns) == columns()
+
+
+def test_progress_and_default_quiet(tmp_path, capsys):
+    f = tmp_path / "m.pcap"
+    write_pcap(f, many())
+    preprocess(f)
+    assert capsys.readouterr().err == ""
+    preprocess(f, every=100)
+    assert "packets=100 " in capsys.readouterr().err
+
+
+def test_checkpoint_resume(tmp_path, monkeypatch):
+    f, ck = tmp_path / "m.pcap", str(tmp_path / "c.ckpt")
+    write_pcap(f, many())
+    full = preprocess(f)
+    real, calls = dpkt.ethernet.Ethernet, [0]
+
+    def dying(buf):
+        calls[0] += 1
+        if calls[0] == 230:  # after the checkpoint at packet 200
+            raise RuntimeError("killed")
+        return real(buf)
+
+    monkeypatch.setattr(dpkt.ethernet, "Ethernet", dying)
+    with pytest.raises(RuntimeError):
+        preprocess(f, checkpoint=ck, every=100)
+    monkeypatch.setattr(dpkt.ethernet, "Ethernet", real)
+    assert Path(ck).exists()
+    with pytest.raises(ValueError):
+        preprocess(f, checkpoint=ck, every=100, sample_rate=0.5)
+    with pytest.raises(ValueError):
+        preprocess(f, checkpoint=ck, every=100, n_max=5)
+    resumed = preprocess(f, checkpoint=ck, every=100)
+    assert resumed.equals(full)
+    assert not Path(ck).exists()
+
+
+def test_cli_checkpoint(tmp_path):
+    f, out, ck = tmp_path / "m.pcap", tmp_path / "o.csv", tmp_path / "c.ckpt"
+    write_pcap(f, many())
+    main([str(f), str(out), "--checkpoint", str(ck), "--every", "100"])
+    assert json.loads(Path(str(out) + ".meta.json").read_text()) == {"sample_rate": 1.0}
+    assert pd.read_csv(out).shape[0] == 200 and not ck.exists()

@@ -6,7 +6,7 @@
 
 ## 현재 상태
 
-최소 베이스라인 파이프라인이 구현되어 있습니다: 전처리(pcap → flow 표 CSV), 라벨·특징 생성, 학습·평가(RandomForest). MAWI 2012-04-09 trace 1개로 E1–E3를 돌린 예비 결과가 아래 "예비 결과"에 있습니다. 날짜 간·데이터셋 간 결과는 아직 없습니다.
+최소 베이스라인 파이프라인이 구현되어 있습니다: 전처리(pcap → flow 표 CSV), 라벨·특징 생성, 학습·평가(RandomForest). MAWI 2012-04-09 trace 1개로 E1–E3를 돌린 예비 결과가 아래 "예비 결과"에 있습니다. 날짜 간·데이터셋 간 결과는 아직 없습니다. 2026-10-14 trace 결과도 같은 절에 있습니다.
 
 ## 예비 결과 (MAWI 2012-04-09, trace 1개)
 
@@ -24,6 +24,23 @@
 - n = 3과 n = 4의 F1 차이(0.020)는 시드 변동(표준편차 약 0.002)보다 크지만, test 표본 변동을 보는 부트스트랩 CI는 약간 겹칩니다.
 - 누설 구조(데이터 패킷이 n개 미만인데 elephant인 flow)는 전체 elephant의 1.3% 이하입니다.
 - 한계: trace 1개, 단일 날짜입니다. 날짜가 바뀔 때의 변동은 이 숫자에 들어 있지 않습니다. 날짜 간 일반화(R2)와 임계값 민감도(R1)는 후속 실험입니다.
+
+### 최신 trace (MAWI 2026-10-14, 같은 설정, 시드 0 하나)
+
+flow 401만 개(`--sample-rate 0.1`), train 281만 / test 120만, 임계값 = train 상위 1% (8,994 B), test elephant 11,662개. 같은 trace를 시간순 70/30으로 나눈 결과이며 날짜 간 일반화가 아닙니다.
+
+| n | F1 | F1 95% CI | precision | recall | short elephant 비율 |
+|---|---|---|---|---|---|
+| 0 (헤더만) | 0.276 | 0.269–0.283 | 0.233 | 0.339 | 0 |
+| 1 | 0.389 | 0.380–0.398 | 0.427 | 0.358 | 0.000 |
+| 3 | 0.613 | 0.606–0.621 | 0.777 | 0.506 | 0.007 |
+| 4 | 0.683 | 0.676–0.691 | 0.820 | 0.585 | 0.017 |
+| 10 | 0.864 | 0.860–0.869 | 0.924 | 0.812 | **0.237** |
+
+- n = 10의 F1은 비교하면 안 됩니다. test elephant의 23.7%가 데이터 패킷 10개 미만이라 정답이 특징에 그대로 들어 있습니다(2012는 1.3%). 임계값이 낮아서 생긴 차이입니다.
+- n = 4의 F1은 2012(0.677)와 비슷하지만, 각각 한 trace 안에서 나눈 값이라 일반화를 뜻하지 않습니다.
+- n = 0(헤더만)의 F1이 2012(0.166)보다 높습니다. 원인은 확인하지 않았습니다.
+- 두 trace는 임계값 값(34,911 B 대 8,994 B)이 달라 같은 "상위 1%"라도 같은 대상이 아닙니다. 절대 규모 지표는 `sample_rate`로 보정해서 봐야 합니다.
 
 ## 환경 설정
 
@@ -86,7 +103,7 @@ PYTHONPATH=src python -m flowpred.preprocess ...
 ### 1. 전처리 (pcap → flow 표 CSV)
 
 ```
-python -m flowpred.preprocess <pcap 경로> <출력 CSV 경로> [최대 패킷 수] [--sample-rate r]
+python -m flowpred.preprocess <pcap 경로> <출력 CSV 경로> [최대 패킷 수] [--sample-rate r] [--checkpoint PATH] [--every N]
 ```
 
 예: 파일 앞부분 100만 패킷만 쓰기
@@ -104,6 +121,12 @@ PYTHONPATH=src python -m flowpred.preprocess data/raw/<파일>.pcap.gz data/proc
 ```
 
 2026-10-18 trace는 gz 6.1GB, 2.4억 패킷이라 샘플링 없이는 flow dict가 약 33GB 필요할 것으로 추정합니다(가정; 2012 trace 측정은 flow 258만 개에서 최대 4.8GB, 10.5분). 이 머신의 RAM은 15.6GB입니다. 샘플링해도 패킷은 전부 읽으므로 시간은 거의 줄지 않고 메모리가 줍니다. precision/recall/F1 같은 비율 지표는 영향이 없다고 보지만, table_reduction 같은 절대 규모 지표는 sample_rate로 나눠 해석해야 합니다.
+
+몇 시간 걸리는 큰 trace는 `--checkpoint PATH`로 중간 상태를 저장하게 합니다. `--every N`(기본 20,000,000)패킷마다 stderr에 진행 줄(읽은 패킷 수, flow 수, 경과 초)을 쓰고 `PATH`에 flow 상태를 저장합니다. 도중에 죽으면 **같은 명령을 다시 실행**하면 `PATH`부터 이어가고(앞쪽 패킷은 파싱 없이 건너뜀), 정상 종료하면 `PATH`를 지웁니다. 이어받을 때 `--sample-rate`나 pcap 파일 크기 등이 체크포인트와 다르면 오류를 냅니다. 체크포인트 파일은 flow 수만큼 커집니다.
+
+```bash
+PYTHONPATH=src python -m flowpred.preprocess data/raw/<파일>.pcap.gz data/processed/flows.csv --sample-rate 0.1 --checkpoint data/processed/flows.ckpt
+```
 
 ### 2. 학습·평가
 
@@ -187,7 +210,7 @@ network_pj/
 
 ## 로드맵
 
-- 2026.12: E1–E3 (기본 베이스라인, 헤더 전용 기준선, N ablation). MAWI trace 1개로 실행하고 결과를 README에 추가. (2012-04-09 예비 결과 기록 완료, 최신 trace는 다운로드 후 추가.)
+- 2026.12: E1–E3 (기본 베이스라인, 헤더 전용 기준선, N ablation). MAWI trace 1개로 실행하고 결과를 README에 추가. (2012-04-09와 2026-10-14 예비 결과 기록 완료.)
 - 2027.01–03: R1–R4 (임계값 민감도, 날짜 간 일반화, 데이터셋 간 일반화(CAIDA 승인 시), 특징 기여). 자세한 내용은 `docs/design.md` 3.2절.
 
 ## 한계
