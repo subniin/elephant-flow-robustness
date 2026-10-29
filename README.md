@@ -185,6 +185,8 @@ PYTHONPATH=src python -m flowpred.train data/processed/flows.csv --n 4 --out res
 
 `--seed S`(기본 0)는 RandomForest 분류기·회귀기의 `random_state`와 `--train-max-rows` 층화 추출의 `random_state`에 쓰입니다. 기본 0은 이전 동작과 같습니다. F1 신뢰구간(`f1_lo`, `f1_hi`)은 test flow를 복원추출하는 일을 200회 반복해 매번 F1을 계산하고 2.5, 97.5 백분위수를 취한 값이며, 복원추출 표본에 양성이 없으면 그 반복의 F1은 0, test 양성이 0개면 빈 값(N/A)입니다. 부트스트랩 난수도 같은 `--seed`로 고정됩니다. 구간은 test 표본 변동만 보여 주므로, 모델 시드에 따른 변동은 `--seed`를 바꿔 반복 실행해서 확인하세요.
 
+표준 출력에는 `el_udp_frac`(UDP elephant 비율), `recall_tcp`, `recall_udp`(프로토콜별 recall) 한 줄도 나옵니다. 해당 elephant가 없으면 N/A입니다. 결과 CSV 열은 아니므로(32열 그대로) 필요하면 출력을 따로 저장하세요.
+
 PowerShell에서 `PYTHONPATH`를 설정했다면 `PYTHONPATH=src` 부분은 빼고 실행합니다.
 
 ### 테스트

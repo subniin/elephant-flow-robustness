@@ -8,7 +8,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from flowpred.train import COLUMNS, f1_bootstrap_ci, main, run, stratified_recall
+from flowpred.train import (COLUMNS, f1_bootstrap_ci, main, proto_recall, run,
+                            stratified_recall)
 
 
 def synth(rows=300, seed=0, t0=0.0):
@@ -208,3 +209,34 @@ def test_evaluate_calls_stratified(csvs):
     r0 = run(csvs[0], csvs[1], thr_param=0.10, n=0)
     assert r0["el_short_frac"] == 0 and r0["recall_short"] is None
     assert r0["recall_long"] == pytest.approx(r0["recall"])
+
+
+def test_proto_recall_mixed():
+    # elephants idx 0..3: tcp, tcp, udp, udp; idx4 mouse
+    y = [1, 1, 1, 1, 0]
+    proto = [6, 6, 17, 17, 17]
+    pred = [1, 0, 1, 1, 1]
+    assert proto_recall(y, pred, proto) == (0.5, 0.5, 1.0)
+
+
+def test_proto_recall_one_group_only():
+    assert proto_recall([1, 1], [1, 0], [6, 6]) == (0.0, 0.5, None)
+    assert proto_recall([1, 1], [1, 0], [17, 17]) == (1.0, None, 0.5)
+    assert proto_recall([0, 0], [1, 0], [6, 17]) == (None, None, None)
+
+
+def test_run_proto_keys_and_report(tmp_path, capsys):
+    a, b = tmp_path / "a.csv", tmp_path / "b.csv"
+    for f, sd, t0 in ((a, 1, 0.0), (b, 2, 1000.0)):
+        d = synth(seed=sd, t0=t0)
+        d["proto"] = np.where(d.index % 3 == 0, 17, 6)
+        d.to_csv(f, index=False)
+    for n in (4, 0):
+        r = run(a, b, thr_param=0.10, n=n)
+        for k in ("el_udp_frac", "recall_tcp", "recall_udp"):
+            assert r[k] is None or 0 <= r[k] <= 1
+        assert r["el_udp_frac"] is not None
+    main([str(a), "--test", str(b), "--thr-param", "0.10"])
+    out = capsys.readouterr().out
+    assert "el_udp_frac=" in out and "recall_tcp=" in out and "recall_udp=" in out
+    assert len(COLUMNS) == 32

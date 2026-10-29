@@ -65,6 +65,22 @@ def stratified_recall(yte, pred, n_seen, n):
             rec(yte & ~short), rec(yte & short))
 
 
+def proto_recall(yte, pred, proto):
+    """(el_udp_frac, recall_tcp, recall_udp) over test elephants (yte == 1).
+
+    proto 6 = TCP, 17 = UDP. None = N/A."""
+    yte, pred = np.asarray(yte) == 1, np.asarray(pred) == 1
+    udp = np.asarray(proto) == 17
+    el = int(yte.sum())
+
+    def rec(mask):
+        k = int(mask.sum())
+        return float(pred[mask].sum() / k) if k else None
+
+    return ((float(udp[yte].sum() / el) if el else None),
+            rec(yte & ~udp), rec(yte & udp))
+
+
 def f1_bootstrap_ci(y, pred, seed=0, B=200):
     """(lo, hi) = 2.5/97.5 percentiles of F1 (pos=1) over B resamples of rows.
 
@@ -105,6 +121,8 @@ def evaluate(Xtr, ytr, ytr_log, Xte, yte, yte_log, byte_count_te, reg_thr_value,
         pred_log >= math.log10(reg_thr_value), bc)
     m["el_short_frac"], m["recall_long"], m["recall_short"] = stratified_recall(
         yte, pred, Xte["n_seen"] if n >= 1 else None, n)
+    m["el_udp_frac"], m["recall_tcp"], m["recall_udp"] = proto_recall(
+        yte, pred, Xte["proto"])
     return m
 
 
@@ -120,7 +138,8 @@ def _sample_rate(csv_path):
 def run(train_csv, test_csv=None, n=4, thr_def="bytes_pct", thr_param=0.01,
         thr_fit="train", tail_sec=0.0, model="rf", train_max_rows=None, seed=0):
     """Full pipeline for one setting; returns dict with all 32 COLUMNS
-    plus n_train_used (rows the models were fit on)."""
+    plus n_train_used (rows the models were fit on) and el_udp_frac,
+    recall_tcp, recall_udp (not CSV columns)."""
     if model != "rf":
         raise ValueError("only model 'rf' is supported")
     if thr_fit not in ("train", "test"):
@@ -172,6 +191,9 @@ def format_report(r):
         f"el_short_frac={_f(r['el_short_frac'], '{:.2f}')} "
         f"recall_long={_f(r['recall_long'], '{:.2f}')} "
         f"recall_short={_f(r['recall_short'], '{:.2f}')}",
+        f"el_udp_frac={_f(r['el_udp_frac'], '{:.2f}')} "
+        f"recall_tcp={_f(r['recall_tcp'], '{:.2f}')} "
+        f"recall_udp={_f(r['recall_udp'], '{:.2f}')}",
         f"clf coverage={r['clf_coverage']:.2f} "
         f"table_reduction={_f(r['clf_reduction'], '{:.1f}')}",
         f"reg coverage={r['reg_coverage']:.2f} "
