@@ -1,0 +1,291 @@
+<title>Elephant Flow Robustness</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  /* Layout: single reading column; a pipeline diagram first, then questions, data, results, repo. */
+  :root {
+    --bg: #f2f5f7;
+    --panel: #ffffff;
+    --ink: #13202b;
+    --muted: #55677a;
+    --line: #cfd9e1;
+    --accent: #0b6e69;
+    --accent-soft: #d9efec;
+    --warn: #a4470a;
+    --warn-soft: #f8e6d8;
+    --s1: #6b7c8c;
+    --s2: #0b6e69;
+    --s3: #b4410c;
+    --s4: #2456b8;
+    --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0e161d; --panel: #16212b; --ink: #e6edf3; --muted: #93a5b6; --line: #2a3a48;
+      --accent: #4fc4bb; --accent-soft: #14312f; --warn: #f0a068; --warn-soft: #3a2616;
+      --s1: #8fa1b2; --s2: #4fc4bb; --s3: #f08a5a; --s4: #7ea6f5;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0e161d; --panel: #16212b; --ink: #e6edf3; --muted: #93a5b6; --line: #2a3a48;
+    --accent: #4fc4bb; --accent-soft: #14312f; --warn: #f0a068; --warn-soft: #3a2616;
+    --s1: #8fa1b2; --s2: #4fc4bb; --s3: #f08a5a; --s4: #7ea6f5;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--ink); font: 15px/1.6 var(--font-body);
+    padding-block: 32px 56px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+  }
+  main { max-width: 1040px; margin: 0 auto; display: flex; flex-direction: column; gap: 40px; }
+  h1, h2, h3 { font-weight: 600; line-height: 1.25; text-wrap: balance; margin: 0; }
+  h1 { font-size: clamp(26px, 5vw, 36px); letter-spacing: -0.01em; }
+  h2 { font-size: 20px; }
+  h3 { font-size: 15px; }
+  p { margin: 0; }
+  code, .mono { font-family: var(--font-mono); font-size: 0.88em; }
+  .lede { max-width: 68ch; color: var(--muted); margin-top: 10px; font-size: 16px; }
+  .eyebrow { font: 500 12px var(--font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--accent); margin-bottom: 8px; }
+  section { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+  .sub { color: var(--muted); max-width: 72ch; }
+  .scroll { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+  .scroll > svg { display: block; min-width: 760px; width: 100%; height: auto; }
+
+  /* diagram */
+  .b-code { fill: var(--panel); stroke: var(--accent); stroke-width: 1.6; }
+  .b-file { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.2; stroke-dasharray: 5 4; }
+  .t1 { fill: var(--ink); font: 600 13px var(--font-body); }
+  .t2 { fill: var(--muted); font: 400 10.5px var(--font-body); }
+  .tm { fill: var(--accent); font: 500 10px var(--font-mono); }
+  .arrow { stroke: var(--muted); stroke-width: 1.4; fill: none; }
+  .head { fill: var(--muted); }
+
+  .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 14px 16px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .card p { color: var(--muted); font-size: 14px; }
+  .tag { align-self: flex-start; font: 500 11px var(--font-mono); padding: 1px 8px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); }
+  .tag.done { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+  .tag.part { color: var(--warn); border-color: var(--warn); background: var(--warn-soft); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font: 500 11px var(--font-mono); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .scroll > table { min-width: 560px; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 13px; color: var(--muted); }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .legend svg { width: 22px; height: 12px; }
+  #chart { min-width: 0; }
+  #chart svg { display: block; width: 100%; height: auto; }
+  .callout { background: var(--warn-soft); border-left: 3px solid var(--warn); padding: 10px 14px; border-radius: 0 6px 6px 0; font-size: 14px; max-width: 80ch; }
+
+  .steps { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 14px; }
+  .steps span.s { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; }
+  .steps span.a { color: var(--muted); }
+  pre.tree { margin: 0; padding: 14px 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; overflow-x: auto; font: 13px/1.6 var(--font-mono); color: var(--ink); }
+  pre.tree em { color: var(--muted); font-style: normal; }
+  footer { color: var(--muted); font-size: 13px; max-width: 80ch; }
+  @media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
+</style>
+
+<main>
+  <header>
+    <div class="eyebrow">MAWI · samplepoint-F · 초반 패킷 기반 elephant 예측</div>
+    <h1>Elephant Flow Robustness</h1>
+    <p class="lede">flow의 처음 N개 데이터 패킷으로 elephant(바이트 상위 flow)를 미리 맞출 수 있는지, 그 성능이 <b>날짜·데이터셋</b>이 바뀌거나 <b>임계값 정의</b>가 바뀌어도 유지되는지를 재는 프로젝트입니다. 이 페이지는 코드, 데이터, 실험, 지금까지 나온 결과를 한 장으로 정리합니다.</p>
+  </header>
+
+  <section>
+    <h2>1. 데이터가 흐르는 길</h2>
+    <p class="sub">점선 상자는 파일, 실선 상자는 코드입니다. 모든 모듈은 <code>src/flowpred/</code>에 있고 <code>PYTHONPATH=src</code>로 실행합니다.</p>
+    <div class="scroll">
+      <svg viewBox="0 0 980 250" role="img" aria-label="pcap에서 결과 CSV까지 처리 흐름도">
+        <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="head"/></marker></defs>
+        <rect class="b-file" x="10" y="30" width="150" height="76" rx="6"/>
+        <text class="t1" x="22" y="54">MAWI pcap.gz</text>
+        <text class="t2" x="22" y="72">2012-04-09 (841MB)</text>
+        <text class="t2" x="22" y="87">2026-10-14 (12.5GB)</text>
+
+        <rect class="b-code" x="200" y="30" width="150" height="76" rx="6"/>
+        <text class="t1" x="212" y="54">preprocess.py</text>
+        <text class="t2" x="212" y="72">단방향 5-tuple flow 집계</text>
+        <text class="t2" x="212" y="87">crc32 샘플링 · 체크포인트</text>
+
+        <rect class="b-file" x="390" y="30" width="150" height="76" rx="6"/>
+        <text class="t1" x="402" y="54">flows.csv</text>
+        <text class="t2" x="402" y="72">27열: 5-tuple, 시작시각,</text>
+        <text class="t2" x="402" y="87">pkt/byte, plen·iat 1..10</text>
+
+        <rect class="b-code" x="580" y="30" width="150" height="76" rx="6"/>
+        <text class="t1" x="592" y="54">features.py</text>
+        <text class="t2" x="592" y="72">라벨 · 특징(n) · 임계값</text>
+        <text class="t2" x="592" y="87">시간순 70/30 · tail 제거</text>
+
+        <rect class="b-code" x="770" y="30" width="200" height="76" rx="6"/>
+        <text class="t1" x="782" y="54">train.py</text>
+        <text class="t2" x="782" y="72">RandomForest 분류기 + 회귀기</text>
+        <text class="t2" x="782" y="87">지표 · 층화 보고 · 부트스트랩 CI</text>
+
+        <path class="arrow" d="M160 68H196" marker-end="url(#ah)"/>
+        <path class="arrow" d="M350 68H386" marker-end="url(#ah)"/>
+        <path class="arrow" d="M540 68H576" marker-end="url(#ah)"/>
+        <path class="arrow" d="M730 68H766" marker-end="url(#ah)"/>
+
+        <rect class="b-file" x="440" y="170" width="150" height="56" rx="6"/>
+        <text class="t1" x="452" y="194">flows.csv.meta.json</text>
+        <text class="t2" x="452" y="211">{"sample_rate": r}</text>
+        <path class="arrow" d="M465 106V166" marker-end="url(#ah)"/>
+        <text class="tm" x="400" y="148">샘플링 비율 기록</text>
+
+        <rect class="b-file" x="660" y="170" width="150" height="56" rx="6"/>
+        <text class="t1" x="672" y="194">results/*.csv</text>
+        <text class="t2" x="672" y="211">32열, 실행마다 한 행</text>
+        <rect class="b-file" x="830" y="170" width="140" height="56" rx="6"/>
+        <text class="t1" x="842" y="194">표준 출력</text>
+        <text class="t2" x="842" y="211">리포트 + 프로토콜별 recall</text>
+        <path class="arrow" d="M870 106V138H735V166" marker-end="url(#ah)"/>
+        <path class="arrow" d="M870 138H900V166" marker-end="url(#ah)"/>
+        <path class="arrow" d="M590 198H656" marker-end="url(#ah)" stroke-dasharray="3 3"/>
+        <text class="tm" x="560" y="246">train이 meta.json을 읽어 sample_rate 열에 기록</text>
+      </svg>
+    </div>
+  </section>
+
+  <section>
+    <h2>2. 핵심 정의</h2>
+    <div class="grid">
+      <div class="card"><h3>flow</h3><p>한 pcap 안의 단방향 IPv4 TCP/UDP 5-tuple. idle timeout 없음. 데이터 패킷은 페이로드가 0보다 큰 패킷입니다.</p></div>
+      <div class="card"><h3>특징 (처음 N개 데이터 패킷)</h3><p><code>proto, src_port, dst_port, n_seen</code>과 패킷 크기 <code>plen_1..n</code>, 도착 간격 <code>iat_1..n-1</code>. 총 열 수는 n=0이면 3, 아니면 2n+3. <code>pkt_count</code>와 <code>byte_count</code>는 정답이라 특징에서 뺍니다.</p></div>
+      <div class="card"><h3>elephant 임계값</h3><p>기본은 train 구간 바이트 상위 1%(<code>bytes_pct</code>, p=0.01). 상위 10%는 데이터 패킷이 n개 미만인 elephant가 절반이라 정답이 특징에 들어 있어 기본에서 뺐습니다. 고정 바이트, 패킷 수 기준도 선택할 수 있습니다.</p></div>
+      <div class="card"><h3>평가</h3><p>시간순 70/30 분할 또는 별도 test CSV. 정밀도, 재현율, F1, F1 95% 신뢰구간(test 복원추출 200회), 트래픽 커버리지, flow table 감소 배수. elephant를 short/long, TCP/UDP로 나눈 층화 recall도 냅니다.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>3. 질문과 실험 진행 상황</h2>
+    <p class="sub">차별점은 두 가지입니다. (1) 날짜·데이터셋을 넘는 일반화, (2) 임계값 정의·크기에 따른 민감도. 조기 중단 규칙은 프로젝트가 끝난 뒤 추가할지 정할 후보입니다.</p>
+    <div class="grid">
+      <div class="card"><span class="tag done">완료</span><h3>E1–E3 기본 베이스라인</h3><p>RandomForest, 헤더만 쓴 기준선(n=0), n ∈ {0,1,3,4,10} ablation. 2012와 2026 각각 한 trace 안에서 평가했습니다.</p></div>
+      <div class="card"><span class="tag part">예비</span><h3>R2 날짜 간 일반화</h3><p>2012 ↔ 2026 양방향 완료. 방향에 따라 성능이 크게 다릅니다. 날짜가 둘뿐이라 시간과 수집 환경 효과를 구분하지 못합니다.</p></div>
+      <div class="card"><span class="tag">미착수</span><h3>R1 임계값 민감도</h3><p>상위 10%·1%·0.1%와 고정 100KB 비교. 기본값 선정 때 10%의 누설만 측정했습니다.</p></div>
+      <div class="card"><span class="tag">대기</span><h3>R3 MAWI ↔ CAIDA</h3><p>CAIDA 승인 전이라 시작하지 않았습니다.</p></div>
+      <div class="card"><span class="tag">미착수</span><h3>R4 특징 기여</h3><p>헤더·크기·타이밍 특징 묶음(<code>FEATURE_GROUPS</code>)별 기여도.</p></div>
+      <div class="card"><span class="tag">후보</span><h3>조기 중단 규칙</h3><p>확신이 서면 패킷 N개를 다 기다리지 않고 판정하는 규칙. 프로젝트 종료 후 결정.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>4. 데이터 현황</h2>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>파일</th><th class="num">flow 수</th><th class="num">sample_rate</th><th>용도</th></tr></thead>
+        <tbody>
+          <tr><td><code>flows_2012.csv</code></td><td class="num">2,580,000</td><td class="num">1.0</td><td>2012 단일 trace 실험 (E1–E3)</td></tr>
+          <tr><td><code>flows_2012_s10.csv</code></td><td class="num">257,036</td><td class="num">0.1</td><td>날짜 간 실험(2026과 비율을 맞춤)</td></tr>
+          <tr><td><code>flows_2026_s10.csv</code></td><td class="num">4,013,689</td><td class="num">0.1</td><td>2026 단일 실험, 날짜 간 실험</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="sub">2026 trace는 패킷이 4.7억 개라 flow 해시 샘플링 10%로 줄였습니다. 샘플링은 비율 지표(F1 등)에는 영향이 없다고 보지만 flow table 감소 배수 같은 절대 규모 지표는 <code>sample_rate</code>로 보정해서 읽어야 합니다. train과 test의 sample_rate가 다르면 오류를 냅니다.</p>
+  </section>
+
+  <section>
+    <h2>5. 지금까지 나온 결과</h2>
+    <p class="sub">n(처음 몇 개 데이터 패킷을 쓰는가)에 따른 F1입니다. 점에 마우스를 올리면 값이 나옵니다.</p>
+    <div class="legend" id="legend"></div>
+    <div id="chart" class="scroll" style="padding:8px 4px 0"></div>
+    <div class="callout">n=10은 해석하면 안 됩니다. test elephant의 11–24%가 데이터 패킷 10개 미만인 flow라 정답이 특징에 그대로 들어 있습니다(음영 구간). 날짜 간 두 선은 임계값을 8,909B로 같게 맞춘 값이고, n=4의 날짜 간 값만 시드 5개 평균입니다. 나머지는 시드 1개입니다.</div>
+    <div class="grid">
+      <div class="card"><h3>n이 커질수록 F1 증가</h3><p>같은 날짜 안에서 n=0(헤더만) 0.17–0.28, n=4 약 0.68. 헤더만으로는 부족하고 초반 패킷 크기와 간격이 정보를 줍니다.</p></div>
+      <div class="card"><h3>날짜 간 성능은 방향마다 다름</h3><p>n=4에서 2012로 학습해 2026을 맞히면 0.29, 반대로 2026으로 학습해 2012를 맞히면 0.64. 시드 표준편차는 0.006–0.016입니다.</p></div>
+      <div class="card"><h3>UDP만의 문제는 아님</h3><p>2012 elephant는 TCP 93%, 포트 80이 79%. 2026은 UDP 30%, 포트 443이 85%. UDP elephant는 양방향 모두 recall이 0–0.11이지만, 2012 → 2026은 TCP만 봐도 0.22로 2026 → 2012의 0.53보다 낮습니다. 원인은 아직 모릅니다.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>6. 저장소 구조</h2>
+<pre class="tree">network_pj/
+├── src/flowpred/
+│   ├── preprocess.py   <em># pcap → flow CSV (--sample-rate, --checkpoint, --every)</em>
+│   ├── features.py     <em># drop_tail, split_time, fit_threshold, label, features, FEATURE_GROUPS</em>
+│   └── train.py        <em># CLI: RF 분류·회귀, 지표, 층화 보고, 결과 CSV 32열</em>
+├── tests/              <em># test_preprocess / test_features / test_train (33개)</em>
+├── docs/
+│   ├── problem.md      <em># 문제 정의, 문헌 표, 연구 질문, 위험</em>
+│   ├── design.md       <em># 설계, 열 목록, 실험 계획 R1–R4</em>
+│   └── project-map.html <em># 이 페이지</em>
+├── data/{raw,processed}  <em># git 제외</em>
+├── results/            <em># 실행 결과 CSV, git 제외</em>
+├── harness/            <em># spec, gate 설정, 계획 (git 제외)</em>
+└── README.md           <em># 실행 방법과 예비 결과</em></pre>
+  </section>
+
+  <section>
+    <h2>7. 작업 방식</h2>
+    <div class="steps">
+      <span class="s">spec 작성</span><span class="a">→</span>
+      <span class="s">구현 + 테스트</span><span class="a">→</span>
+      <span class="s">gate (pytest)</span><span class="a">→</span>
+      <span class="s">verifier 판정</span><span class="a">→</span>
+      <span class="s">커밋 · push</span>
+    </div>
+    <p class="sub">동작을 바꾸거나 파일을 둘 이상 고치는 작업은 먼저 <code>harness/specs/</code>에 수용 기준을 쓰고, 별도 verifier가 기준마다 통과 여부를 판정합니다. 완료는 gate 결과로 정하고 자기 보고로 정하지 않습니다.</p>
+  </section>
+
+  <footer>한계: MAWI 두 날짜(2012, 2026)와 단일 수집 지점뿐이고 한 날짜당 15분입니다. 날짜 차이의 원인이 시간인지 환경인지는 단정할 수 없습니다. 위 수치는 모두 예비 결과입니다.</footer>
+</main>
+
+<script>
+(function () {
+  var N = ["0", "1", "3", "4", "10"];
+  var S = [
+    { name: "같은 날짜 2012", c: "--s1", dash: "5 4", m: "c", v: [0.166, 0.457, 0.656, 0.677, 0.754] },
+    { name: "같은 날짜 2026", c: "--s2", dash: "5 4", m: "s", v: [0.276, 0.389, 0.613, 0.683, 0.864] },
+    { name: "2012 → 2026", c: "--s3", dash: "", m: "t", v: [0.137, 0.182, 0.202, 0.290, 0.702] },
+    { name: "2026 → 2012", c: "--s4", dash: "", m: "d", v: [0.078, 0.319, 0.368, 0.635, 0.890] }
+  ];
+  var W = 720, H = 340, L = 46, R = 20, T = 16, B = 44;
+  var pw = W - L - R, ph = H - T - B;
+  var x = function (i) { return L + (pw * i) / (N.length - 1); };
+  var y = function (v) { return T + ph * (1 - v); };
+  function marker(m, cx, cy, col) {
+    var s = 5;
+    if (m === "c") return '<circle cx="' + cx + '" cy="' + cy + '" r="' + s + '" fill="' + col + '"/>';
+    if (m === "s") return '<rect x="' + (cx - s) + '" y="' + (cy - s) + '" width="' + 2 * s + '" height="' + 2 * s + '" fill="' + col + '"/>';
+    if (m === "t") return '<path d="M' + cx + " " + (cy - s - 1) + "L" + (cx + s + 1) + " " + (cy + s) + "L" + (cx - s - 1) + " " + (cy + s) + 'z" fill="' + col + '"/>';
+    return '<path d="M' + cx + " " + (cy - s - 1) + "L" + (cx + s + 1) + " " + cy + "L" + cx + " " + (cy + s + 1) + "L" + (cx - s - 1) + " " + cy + 'z" fill="' + col + '"/>';
+  }
+  var g = "";
+  g += '<rect x="' + (x(4) - 34) + '" y="' + T + '" width="68" height="' + ph + '" fill="var(--warn-soft)"/>';
+  g += '<text x="' + x(4) + '" y="' + (T + 14) + '" text-anchor="middle" style="font:500 10px var(--font-mono);fill:var(--warn)">누설</text>';
+  for (var t = 0; t <= 1.0001; t += 0.2) {
+    g += '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + y(t) + '" y2="' + y(t) + '" stroke="var(--line)" stroke-width="1"/>';
+    g += '<text x="' + (L - 8) + '" y="' + (y(t) + 4) + '" text-anchor="end" style="font:400 11px var(--font-mono);fill:var(--muted)">' + t.toFixed(1) + "</text>";
+  }
+  N.forEach(function (n, i) {
+    g += '<text x="' + x(i) + '" y="' + (H - 22) + '" text-anchor="middle" style="font:400 12px var(--font-mono);fill:var(--muted)">' + n + "</text>";
+  });
+  g += '<text x="' + (L + pw / 2) + '" y="' + (H - 4) + '" text-anchor="middle" style="font:400 11px var(--font-body);fill:var(--muted)">n: 사용한 데이터 패킷 수 (0 = 헤더만)</text>';
+  g += '<text x="12" y="' + (T + ph / 2) + '" text-anchor="middle" transform="rotate(-90 12 ' + (T + ph / 2) + ')" style="font:400 11px var(--font-body);fill:var(--muted)">F1</text>';
+  S.forEach(function (s) {
+    var d = s.v.map(function (v, i) { return (i ? "L" : "M") + x(i) + " " + y(v); }).join("");
+    g += '<path d="' + d + '" fill="none" stroke="var(--' + s.c.slice(2) + ')" stroke-width="2"' + (s.dash ? ' stroke-dasharray="' + s.dash + '"' : "") + "/>";
+  });
+  S.forEach(function (s) {
+    s.v.forEach(function (v, i) {
+      g += "<g>" + marker(s.m, x(i), y(v), "var(--" + s.c.slice(2) + ")") + "<title>" + s.name + ", n=" + N[i] + ": F1 " + v.toFixed(3) + "</title></g>";
+    });
+  });
+  document.getElementById("chart").innerHTML =
+    '<svg viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="n에 따른 F1, 네 조건 비교" style="min-width:560px">' + g + "</svg>";
+  document.getElementById("legend").innerHTML = S.map(function (s) {
+    var dash = s.dash ? ' stroke-dasharray="' + s.dash + '"' : "";
+    return '<span><svg viewBox="0 0 22 12"><line x1="0" x2="22" y1="6" y2="6" stroke="var(' + s.c + ')" stroke-width="2"' + dash + "/></svg>" + s.name + "</span>";
+  }).join("");
+})();
+</script>
